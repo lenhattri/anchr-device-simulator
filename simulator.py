@@ -25,6 +25,10 @@ try:
 except ImportError:
     yaml = None
 
+# Multi-station constants
+NUM_STATIONS = 10
+PUMPS_PER_STATION = 100
+
 # ---------------------------------------------------------------------------
 # Configuration: config.yaml > environment variables > defaults
 # ---------------------------------------------------------------------------
@@ -35,7 +39,7 @@ def _load_config():
         "mqtt_port": 1883,
         "mqtt_tls": False,
         "tenant_id": "default",
-        "station_id": "st-0007",
+        "station_id": "st-0007", # Kept for backward compat, but overridden by multi-station logic
         "speed": 10,
         "initial_pumps": 1000,
         "min_pumps": 1000,
@@ -104,7 +108,7 @@ MQTT_HOST = CFG["mqtt_host"]
 MQTT_PORT = CFG["mqtt_port"]
 MQTT_TLS = CFG["mqtt_tls"]
 TENANT_ID = CFG["tenant_id"]
-STATION_ID = CFG["station_id"]
+STATION_ID = CFG["station_id"] # Legacy single-station ID
 SPEED = CFG["speed"]
 INITIAL_PUMPS = CFG["initial_pumps"]
 MIN_PUMPS = CFG["min_pumps"]
@@ -152,6 +156,7 @@ class MQTTClientPool:
             client.reconnect_delay_set(min_delay=1, max_delay=30)
             if self.use_tls:
                 client.tls_set()
+                client.tls_insecure_set(True) # Added for dev envs
             client.connect_async(self.host, self.port, keepalive=60)
             client.loop_start()
             self.clients.append(client)
@@ -161,7 +166,6 @@ class MQTTClientPool:
         for c in self.clients:
             c.loop_stop()
             c.disconnect()
-        logger.info("MQTT pool stopped.")
 
     def get(self, index):
         return self.clients[index % self.size]
@@ -193,15 +197,29 @@ class PumpSim:
     """Lightweight pump simulation driven by an asyncio coroutine."""
 
     def __init__(self, pump_index, pool):
-        self.pump_id = f"p-{pump_index:04d}"
-        self.device_id = f"{STATION_ID}:{self.pump_id}"
+        # Calculate Station and Pump ID for Multi-station support
+        # pump_index 0 -> st-0001:p-0001
+        
+        # Determine station index (0-based)
+        station_idx = (pump_index // PUMPS_PER_STATION)
+        # Cycle through 10 stations if index exceeds 1000
+        station_num = (station_idx % NUM_STATIONS) + 1
+        
+        # Determine pump number (1-based within station)
+        pump_num = (pump_index % PUMPS_PER_STATION) + 1
+        
+        # Override standard IDs
+        self.station_id = f"st-{station_num:04d}"
+        self.pump_id = f"p-{pump_num:04d}"
+        self.device_id = f"{self.station_id}:{self.pump_id}"
+
         self.pool = pool
         self.client = pool.get(pump_index)
 
         # state
         self.state = PumpState.HOOK
         self.shift_no = 1
-        self.unit_price = 20000
+        self.unit_price = 20000 + (station_num * 50) # Slight variance per station
         self.currency = "VND"
         self.fuel_grade = "RON95"
 
@@ -210,7 +228,7 @@ class PumpSim:
         self.start_time = None
         self.current_volume = 0.0
         self.current_amount = 0.0
-        self.pump_rate = 0.5  # L/s
+        self.pump_rate = 0.5 + (random.random() * 0.5) # 0.5 - 1.0 L/s
         self.tx_seq = 0
 
         # display
@@ -218,18 +236,18 @@ class PumpSim:
         self.display_amount = 0.0
 
         # totalizer
-        self.totalizer = 10000.0
+        self.totalizer = 10000.0 + (pump_index * 10)
         self.start_totalizer = 0.0
 
         self.msg_seq = 0
 
         # Subscribe to commands on pool client
-        cmd_topic = f"anchr/v1/{TENANT_ID}/{STATION_ID}/{self.pump_id}/cmd"
+        cmd_topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/cmd"
         pool.subscribe(cmd_topic, qos=1, callback=self._on_message)
 
     # -- MQTT helpers -------------------------------------------------------
     def _publish(self, subtopic, data, qos=0):
-        topic = f"anchr/v1/{TENANT_ID}/{STATION_ID}/{self.pump_id}/{subtopic}"
+        topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/{subtopic}"
         self.msg_seq += 1
         envelope = {
             "schema": f"anchr.{subtopic}.v1",
@@ -237,7 +255,7 @@ class PumpSim:
             "message_id": str(uuid.uuid4()),
             "type": subtopic,
             "tenant_id": TENANT_ID,
-            "station_id": STATION_ID,
+            "station_id": self.station_id,
             "pump_id": self.pump_id,
             "device_id": self.device_id,
             "event_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -255,6 +273,7 @@ class PumpSim:
                 "state_code": int(self.state),
                 "display_amount": int(round(amt)),
                 "display_volume_liters": round(vol, 3),
+                "pump_rate_lpm": round(self.pump_rate * 60, 1), # Added field for UI
                 "unit_price": self.unit_price,
                 "shift_no": self.shift_no,
                 "fuel_grade": self.fuel_grade,
@@ -336,7 +355,7 @@ class PumpSim:
             else:
                 ack_msg = "Cannot close shift while pumping"
 
-        ack_topic = f"anchr/v1/{TENANT_ID}/{STATION_ID}/{self.pump_id}/ack"
+        ack_topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/ack"
         self.msg_seq += 1
         ack_envelope = {
             "schema": "anchr.ack.v1",
@@ -344,7 +363,7 @@ class PumpSim:
             "message_id": str(uuid.uuid4()),
             "type": "ack",
             "tenant_id": TENANT_ID,
-            "station_id": STATION_ID,
+            "station_id": self.station_id, # UPDATED to use instance station_id
             "pump_id": self.pump_id,
             "device_id": self.device_id,
             "event_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -442,7 +461,7 @@ class ScaleManager:
         current = len(self.tasks)
         if count > current:
             # scale up
-            for idx in range(current + 1, count + 1):
+            for idx in range(current, count): # FIXED: range(current, count) -> 0 to count-1 if current=0
                 pump = PumpSim(idx, self.pool)
                 task = asyncio.get_event_loop().create_task(pump.run())
                 self.tasks[idx] = task
