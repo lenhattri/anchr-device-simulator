@@ -415,10 +415,10 @@ class PumpSim:
 
         while True:
             if self.state == PumpState.HOOK:
-                idle_ticks = random.randint(5, 10)
+                idle_ticks = max(1, random.randint(5, 10) // SPEED)
                 for _ in range(idle_ticks):
                     self._publish_telemetry()
-                    await asyncio.sleep(1.0 / SPEED)
+                    await asyncio.sleep(1.0)
 
                 # -> LIFT
                 self.state = PumpState.LIFT
@@ -429,7 +429,7 @@ class PumpSim:
 
             elif self.state == PumpState.LIFT:
                 self._publish_telemetry()
-                await asyncio.sleep(2.0 / SPEED)
+                await asyncio.sleep(2.0)
 
                 # -> PUMP
                 self.state = PumpState.PUMP
@@ -440,10 +440,10 @@ class PumpSim:
             elif self.state == PumpState.PUMP:
                 pump_ticks = random.randint(5, 15)
                 for _ in range(pump_ticks):
-                    self.current_volume += self.pump_rate
+                    self.current_volume += (self.pump_rate * SPEED)
                     self.current_amount = self.current_volume * self.unit_price
                     self._publish_telemetry()
-                    await asyncio.sleep(1.0 / SPEED)
+                    await asyncio.sleep(1.0)
 
                 self.totalizer += self.current_volume
                 self.display_volume = self.current_volume
