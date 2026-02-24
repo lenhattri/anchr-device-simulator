@@ -36,7 +36,8 @@ def load_seq_log(path):
             if not line:
                 continue
             record = json.loads(line)
-            sent[record["device_id"]].add(record["seq"])
+            key = f"{record['device_id']}::{record['type']}"
+            sent[key].add(record["seq"])
             total += 1
     return sent, total
 
@@ -79,9 +80,11 @@ def consume_kafka_messages(brokers, topics, timeout_s=30):
             try:
                 envelope = json.loads(msg.value().decode("utf-8"))
                 device_id = envelope.get("device_id", "")
+                msg_type = envelope.get("type", "")
                 seq = envelope.get("seq")
-                if device_id and seq is not None:
-                    received[device_id].add(seq)
+                if device_id and seq is not None and msg_type:
+                    key = f"{device_id}::{msg_type}"
+                    received[key].add(seq)
                     total += 1
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass  # Skip malformed messages

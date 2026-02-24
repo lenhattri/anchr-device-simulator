@@ -245,7 +245,14 @@ class PumpSim:
         self.totalizer = 10000.0 + (pump_index * 10)
         self.start_totalizer = 0.0
 
-        self.msg_seq = 0
+        self.msg_seqs = {
+            "telemetry": 0,
+            "state": 0,
+            "event": 0,
+            "tx": 0,
+            "cmd": 0,
+            "ack": 0
+        }
 
         # Subscribe to commands on pool client
         cmd_topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/cmd"
@@ -254,7 +261,8 @@ class PumpSim:
     # -- MQTT helpers -------------------------------------------------------
     def _publish(self, subtopic, data, qos=0):
         topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/{subtopic}"
-        self.msg_seq += 1
+        self.msg_seqs[subtopic] += 1
+        seq = self.msg_seqs[subtopic]
         envelope = {
             "schema": f"anchr.{subtopic}.v1",
             "schema_version": 1,
@@ -265,7 +273,7 @@ class PumpSim:
             "pump_id": self.pump_id,
             "device_id": self.device_id,
             "event_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-            "seq": self.msg_seq,
+            "seq": seq,
             "data": data,
         }
         self.client.publish(topic, json.dumps(envelope), qos=qos)
@@ -273,7 +281,7 @@ class PumpSim:
         if _seq_log_handle is not None:
             _seq_log_handle.write(json.dumps({
                 "device_id": self.device_id,
-                "seq": self.msg_seq,
+                "seq": seq,
                 "type": subtopic,
                 "message_id": envelope["message_id"],
                 "ts": envelope["event_time"]
