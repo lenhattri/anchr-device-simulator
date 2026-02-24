@@ -26,8 +26,8 @@ except ImportError:
     yaml = None
 
 # Multi-station constants
-NUM_STATIONS = 40
-PUMPS_PER_STATION = 5
+NUM_STATIONS = 150
+PUMPS_PER_STATION = 10
 
 # ---------------------------------------------------------------------------
 # Configuration: config.yaml > environment variables > defaults
@@ -41,7 +41,7 @@ def _load_config():
         "tenant_id": "default",
         "station_id": "st-0007", # Kept for backward compat, but overridden by multi-station logic
         "speed": 10,
-        "initial_pumps": 1000,
+        "initial_pumps": 1500,
         "min_pumps": 1000,
         "max_pumps": 5000,
         "step_size": 1000,
