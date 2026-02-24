@@ -26,8 +26,8 @@ except ImportError:
     yaml = None
 
 # Multi-station constants
-NUM_STATIONS = 300
-PUMPS_PER_STATION = 10
+NUM_STATIONS = 10
+PUMPS_PER_STATION = 3000
 
 # ---------------------------------------------------------------------------
 # Configuration: config.yaml > environment variables > defaults
@@ -234,7 +234,8 @@ class PumpSim:
         self.start_time = None
         self.current_volume = 0.0
         self.current_amount = 0.0
-        self.pump_rate = 0.5 + (random.random() * 0.5) # 0.5 - 1.0 L/s
+        # Pump characteristics - real dispensers: 0.5–2.0 L/s (30–120 lpm)
+        self.pump_rate = round(random.uniform(0.5, 2.0), 2)  # L/s
         self.tx_seq = 0
 
         # display
@@ -415,10 +416,12 @@ class PumpSim:
 
         while True:
             if self.state == PumpState.HOOK:
-                idle_ticks = max(1, random.randint(5, 10) // SPEED)
+                # Realistic idle: pump sends telemetry every 5s while waiting
+                idle_secs = random.randint(60, 300)  # up to 5 minutes between customers
+                idle_ticks = max(1, idle_secs // (SPEED * 5))  # each tick = 5 real secs
                 for _ in range(idle_ticks):
                     self._publish_telemetry()
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(5.0 / SPEED)  # 5s real; sped up by SPEED
 
                 # -> LIFT
                 self.state = PumpState.LIFT
@@ -428,8 +431,9 @@ class PumpSim:
                 self.current_amount = 0.0
 
             elif self.state == PumpState.LIFT:
+                # Nozzle lift + prepay: ~3–8 seconds real time
                 self._publish_telemetry()
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(max(1.0, random.uniform(3, 8) / SPEED))
 
                 # -> PUMP
                 self.state = PumpState.PUMP
@@ -438,8 +442,11 @@ class PumpSim:
                 self.display_amount = 0.0
 
             elif self.state == PumpState.PUMP:
-                pump_ticks = random.randint(5, 15)
+                # Realistic fill: 30–120 seconds at SPEED-adjusted rate
+                fill_secs = random.randint(30, 120)
+                pump_ticks = max(1, fill_secs // SPEED)
                 for _ in range(pump_ticks):
+                    # Each tick represents SPEED real seconds → volume scaled accordingly
                     self.current_volume += (self.pump_rate * SPEED)
                     self.current_amount = self.current_volume * self.unit_price
                     self._publish_telemetry()

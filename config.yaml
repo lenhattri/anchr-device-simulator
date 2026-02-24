@@ -5,9 +5,9 @@ mqtt:
 simulation:
   tenant_id: default
   speed: 10
-  initial_pumps: 3000
-  min_pumps: 3000
-  max_pumps: 3000
+  initial_pumps: 30000
+  min_pumps: 30000
+  max_pumps: 30000
   step_size: 100
   scale_interval: 1800
 pool:
