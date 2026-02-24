@@ -26,7 +26,7 @@ except ImportError:
     yaml = None
 
 # Multi-station constants
-NUM_STATIONS = 150
+NUM_STATIONS = 300
 PUMPS_PER_STATION = 10
 
 # ---------------------------------------------------------------------------
