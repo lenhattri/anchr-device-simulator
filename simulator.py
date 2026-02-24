@@ -379,7 +379,7 @@ class PumpSim:
                 ack_msg = "Cannot close shift while pumping"
 
         ack_topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/ack"
-        self.msg_seq += 1
+        self.msg_seqs["ack"] += 1
         ack_envelope = {
             "schema": "anchr.ack.v1",
             "schema_version": 1,
@@ -390,7 +390,7 @@ class PumpSim:
             "pump_id": self.pump_id,
             "device_id": self.device_id,
             "event_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-            "seq": self.msg_seq,
+            "seq": self.msg_seqs["ack"],
             "correlation_id": cmd_id,
             "data": {
                 "ack": {
