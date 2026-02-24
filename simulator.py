@@ -26,8 +26,8 @@ except ImportError:
     yaml = None
 
 # Multi-station constants
-NUM_STATIONS = 10
-PUMPS_PER_STATION = 100
+NUM_STATIONS = 40
+PUMPS_PER_STATION = 5
 
 # ---------------------------------------------------------------------------
 # Configuration: config.yaml > environment variables > defaults
@@ -116,6 +116,12 @@ MAX_PUMPS = CFG["max_pumps"]
 STEP_SIZE = CFG["step_size"]
 SCALE_INTERVAL = CFG["scale_interval"]
 POOL_SIZE = CFG["pool_size"]
+
+# Sequence log for end-to-end reconciliation (optional)
+SEQ_LOG_FILE = os.environ.get("SEQ_LOG_FILE", "")
+_seq_log_handle = None
+if SEQ_LOG_FILE:
+    _seq_log_handle = open(SEQ_LOG_FILE, "a", buffering=8192)
 
 # Logging
 logging.basicConfig(
@@ -263,6 +269,15 @@ class PumpSim:
             "data": data,
         }
         self.client.publish(topic, json.dumps(envelope), qos=qos)
+        # Optional: write seq log for end-to-end reconciliation
+        if _seq_log_handle is not None:
+            _seq_log_handle.write(json.dumps({
+                "device_id": self.device_id,
+                "seq": self.msg_seq,
+                "type": subtopic,
+                "message_id": envelope["message_id"],
+                "ts": envelope["event_time"]
+            }) + "\n")
 
     def _publish_telemetry(self):
         vol = self.current_volume if self.state == PumpState.PUMP else self.display_volume

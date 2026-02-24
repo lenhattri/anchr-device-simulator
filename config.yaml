@@ -2,16 +2,13 @@ mqtt:
   host: mqtt.hisatochii.id.vn
   port: 8883
   tls: true
-
 simulation:
   tenant_id: default
-  station_id: st-0007
-  speed: 10              # 10x real-time
-  initial_pumps: 1000
-  min_pumps: 1000
-  max_pumps: 5000
-  step_size: 1000
-  scale_interval: 1800   # seconds (30 minutes)
-
+  speed: 10
+  initial_pumps: 100
+  min_pumps: 100
+  max_pumps: 500
+  step_size: 100
+  scale_interval: 1800
 pool:
-  size: 10               # number of shared MQTT clients
+  size: 5
