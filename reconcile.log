@@ -1,6 +1,0 @@
-nohup: ignoring input
-Loading seq log: /tmp/sim-seq.jsonl
-  Loaded 866,563 records from 200 devices
-Consuming from Kafka: 127.0.0.1:9092
-  Topics: ['anchr.mqtt.telemetry.raw.v1', 'anchr.mqtt.tx.raw.v1', 'anchr.mqtt.ack.raw.v1']
-ERROR: confluent-kafka not installed. Install with: pip install confluent-kafka
