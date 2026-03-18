@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import signal
+import threading
 import uuid
 from datetime import datetime, timezone
 from enum import IntEnum
@@ -28,6 +29,12 @@ except ImportError:
 # Multi-station constants
 NUM_STATIONS = 10
 PUMPS_PER_STATION = 3000
+
+# Transaction publish guarantee constants
+MAX_TX_RETRIES = 5          # Max retry attempts for guaranteed publish
+TX_PUBLISH_TIMEOUT = 10     # Seconds to wait for publish confirmation
+GRACEFUL_SHUTDOWN_TIMEOUT = 60  # Max seconds to wait for pump to finish cycle
+TX_STATE_FILE = os.environ.get("TX_STATE_FILE", "/tmp/sim-tx-state.json")
 
 # ---------------------------------------------------------------------------
 # Configuration: config.yaml > environment variables > defaults
@@ -132,6 +139,43 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# TX State Persistence
+# ---------------------------------------------------------------------------
+_tx_state_lock = threading.Lock()
+
+
+def _load_tx_state():
+    """Load persisted tx_seq counters from disk. Returns {device_id: tx_seq}."""
+    path = Path(TX_STATE_FILE)
+    if path.exists():
+        try:
+            with open(path) as f:
+                state = json.load(f)
+            logger.info("Loaded tx_seq state for %d devices from %s", len(state), TX_STATE_FILE)
+            return state
+        except Exception as e:
+            logger.warning("Failed to load tx state from %s: %s", TX_STATE_FILE, e)
+    return {}
+
+
+def _save_tx_state(state):
+    """Persist tx_seq counters to disk atomically."""
+    with _tx_state_lock:
+        tmp_path = TX_STATE_FILE + ".tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp_path, TX_STATE_FILE)
+        except Exception as e:
+            logger.error("Failed to save tx state: %s", e)
+
+
+# Global tx_seq registry (shared across all PumpSim instances)
+_tx_seq_registry = {}  # device_id -> last_tx_seq
+_tx_seq_registry_lock = threading.Lock()
+
+
+# ---------------------------------------------------------------------------
 # Pump state machine
 # ---------------------------------------------------------------------------
 class PumpState(IntEnum):
@@ -202,7 +246,7 @@ class MQTTClientPool:
 class PumpSim:
     """Lightweight pump simulation driven by an asyncio coroutine."""
 
-    def __init__(self, pump_index, pool):
+    def __init__(self, pump_index, pool, tx_state=None):
         # Calculate Station and Pump ID for Multi-station support
         # pump_index 0 -> st-0001:p-0001
         
@@ -222,6 +266,9 @@ class PumpSim:
         self.pool = pool
         self.client = pool.get(pump_index)
 
+        # Graceful shutdown support
+        self.shutdown_event = asyncio.Event()
+
         # state
         self.state = PumpState.HOOK
         self.shift_no = 1
@@ -236,7 +283,17 @@ class PumpSim:
         self.current_amount = 0.0
         # Pump characteristics - real dispensers: 0.5–2.0 L/s (30–120 lpm)
         self.pump_rate = round(random.uniform(0.5, 2.0), 2)  # L/s
-        self.tx_seq = 0
+
+        # Restore tx_seq from persisted state, or start at 0
+        if tx_state and self.device_id in tx_state:
+            self.tx_seq = tx_state[self.device_id]
+            logger.debug("[%s] Restored tx_seq=%d from disk", self.device_id, self.tx_seq)
+        else:
+            self.tx_seq = 0
+
+        # Register in global registry for sequence validation
+        with _tx_seq_registry_lock:
+            _tx_seq_registry[self.device_id] = self.tx_seq
 
         # display
         self.display_volume = 0.0
@@ -258,6 +315,10 @@ class PumpSim:
         # Subscribe to commands on pool client
         cmd_topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/cmd"
         pool.subscribe(cmd_topic, qos=1, callback=self._on_message)
+
+    def request_shutdown(self):
+        """Signal this pump to finish its current cycle and stop."""
+        self.shutdown_event.set()
 
     # -- MQTT helpers -------------------------------------------------------
     def _publish(self, subtopic, data, qos=0):
@@ -312,17 +373,48 @@ class PumpSim:
             qos=0,
         )
 
-    def _publish_transaction(self):
+    async def _publish_transaction_guaranteed(self):
+        """Publish transaction with guaranteed delivery — retry + confirmation."""
         end_time = datetime.now(timezone.utc)
-        self.tx_seq += 1
+
+        # --- Step 1: Allocate sequence with self-validation ---
+        new_seq = self.tx_seq + 1
+
+        # Self-check: validate continuity against global registry
+        with _tx_seq_registry_lock:
+            expected = _tx_seq_registry.get(self.device_id, 0) + 1
+            if new_seq != expected:
+                logger.error(
+                    "[%s] SEQUENCE GAP DETECTED: expected tx_seq=%d but got %d. "
+                    "Correcting to expected value.",
+                    self.device_id, expected, new_seq
+                )
+                new_seq = expected
+
+        self.tx_seq = new_seq
         tx_id = f"{self.device_id}:{self.shift_no}:{self.tx_seq}"
+
         try:
             duration = int((end_time.timestamp() - self.start_time.timestamp()) * 1000)
         except Exception:
             duration = 0
-        self._publish(
-            "tx",
-            {
+
+        # --- Step 2: Build envelope ---
+        topic = f"anchr/v1/{TENANT_ID}/{self.station_id}/{self.pump_id}/tx"
+        self.msg_seqs["tx"] += 1
+        seq = self.msg_seqs["tx"]
+        envelope = {
+            "schema": "anchr.tx.v1",
+            "schema_version": 1,
+            "message_id": str(uuid.uuid4()),
+            "type": "tx",
+            "tenant_id": TENANT_ID,
+            "station_id": self.station_id,
+            "pump_id": self.pump_id,
+            "device_id": self.device_id,
+            "event_time": end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "seq": seq,
+            "data": {
                 "tx_id": tx_id,
                 "tx_seq": self.tx_seq,
                 "shift_no": self.shift_no,
@@ -339,9 +431,75 @@ class PumpSim:
                 "meter_end_totalizer_liters": round(self.totalizer, 3),
                 "status": "COMPLETED",
             },
-            qos=1,
-        )
-        logger.info("[%s] TX %s — %.3f L", self.device_id, tx_id, self.current_volume)
+        }
+        payload_str = json.dumps(envelope)
+
+        # --- Step 3: Publish with retry + delivery confirmation ---
+        published = False
+        for attempt in range(1, MAX_TX_RETRIES + 1):
+            try:
+                info = self.client.publish(topic, payload_str, qos=1)
+                # wait_for_publish blocks until PUBACK received from broker
+                info.wait_for_publish(timeout=TX_PUBLISH_TIMEOUT)
+                if info.rc == 0:  # MQTT_ERR_SUCCESS
+                    published = True
+                    break
+                else:
+                    logger.warning(
+                        "[%s] TX publish attempt %d/%d rc=%d for seq=%d",
+                        self.device_id, attempt, MAX_TX_RETRIES, info.rc, self.tx_seq
+                    )
+            except ValueError:
+                # Raised if QoS=0 (no PUBACK). Should not happen since we use QoS=1.
+                logger.warning(
+                    "[%s] TX publish attempt %d/%d raised ValueError (QoS issue)",
+                    self.device_id, attempt, MAX_TX_RETRIES
+                )
+            except RuntimeError as e:
+                # wait_for_publish raises RuntimeError on timeout
+                logger.warning(
+                    "[%s] TX publish attempt %d/%d timed out for seq=%d: %s",
+                    self.device_id, attempt, MAX_TX_RETRIES, self.tx_seq, e
+                )
+            except Exception as e:
+                logger.warning(
+                    "[%s] TX publish attempt %d/%d failed for seq=%d: %s",
+                    self.device_id, attempt, MAX_TX_RETRIES, self.tx_seq, e
+                )
+
+            if attempt < MAX_TX_RETRIES:
+                backoff = min(2 ** attempt, 30)
+                await asyncio.sleep(backoff)
+
+        if not published:
+            logger.error(
+                "[%s] TX publish FAILED after %d attempts for tx_seq=%d. "
+                "Message will be retried on next opportunity.",
+                self.device_id, MAX_TX_RETRIES, self.tx_seq
+            )
+            # Roll back tx_seq so it will be retried with same sequence number
+            self.tx_seq -= 1
+            self.msg_seqs["tx"] -= 1
+            return False
+
+        # --- Step 4: Post-publish bookkeeping ---
+        # Update global registry
+        with _tx_seq_registry_lock:
+            _tx_seq_registry[self.device_id] = self.tx_seq
+
+        # Write seq log for end-to-end reconciliation
+        if _seq_log_handle is not None:
+            _seq_log_handle.write(json.dumps({
+                "device_id": self.device_id,
+                "seq": seq,
+                "type": "tx",
+                "message_id": envelope["message_id"],
+                "ts": envelope["event_time"],
+                "tx_seq": self.tx_seq,
+            }) + "\n")
+
+        logger.info("[%s] TX %s — %.3f L (confirmed)", self.device_id, tx_id, self.current_volume)
+        return True
 
     # -- command handling ---------------------------------------------------
     def _on_message(self, client, userdata, msg):
@@ -409,19 +567,28 @@ class PumpSim:
 
     # -- main coroutine -----------------------------------------------------
     async def run(self):
-        """State-machine loop for one pump."""
+        """State-machine loop for one pump with graceful shutdown support."""
         # Staggered start to avoid thundering herd
         await asyncio.sleep(random.uniform(0, 10))
         logger.debug("[%s] started", self.device_id)
 
-        while True:
+        while not self.shutdown_event.is_set():
             if self.state == PumpState.HOOK:
+                # Check shutdown before starting a new cycle
+                if self.shutdown_event.is_set():
+                    break
+
                 # Realistic idle: pump sends telemetry every 5s while waiting
                 idle_secs = random.randint(60, 300)  # up to 5 minutes between customers
                 idle_ticks = max(1, idle_secs // (SPEED * 5))  # each tick = 5 real secs
                 for _ in range(idle_ticks):
+                    if self.shutdown_event.is_set():
+                        break
                     self._publish_telemetry()
                     await asyncio.sleep(5.0 / SPEED)  # 5s real; sped up by SPEED
+
+                if self.shutdown_event.is_set():
+                    break
 
                 # -> LIFT
                 self.state = PumpState.LIFT
@@ -435,6 +602,13 @@ class PumpSim:
                 self._publish_telemetry()
                 await asyncio.sleep(max(1.0, random.uniform(3, 8) / SPEED))
 
+                # If shutdown requested during LIFT, go back to HOOK without
+                # starting a pump cycle (no transaction was generated yet)
+                if self.shutdown_event.is_set():
+                    self.state = PumpState.HOOK
+                    self.session_id = None
+                    break
+
                 # -> PUMP
                 self.state = PumpState.PUMP
                 self.start_time = datetime.now(timezone.utc)
@@ -442,7 +616,8 @@ class PumpSim:
                 self.display_amount = 0.0
 
             elif self.state == PumpState.PUMP:
-                # Realistic fill: 30–120 seconds at SPEED-adjusted rate
+                # CRITICAL: Once pumping starts, we MUST complete the cycle
+                # and publish the transaction — never abandon mid-pump.
                 fill_secs = random.randint(30, 120)
                 pump_ticks = max(1, fill_secs // SPEED)
                 for _ in range(pump_ticks):
@@ -455,27 +630,42 @@ class PumpSim:
                 self.totalizer += self.current_volume
                 self.display_volume = self.current_volume
                 self.display_amount = self.current_amount
-                self._publish_transaction()
+
+                # Guaranteed publish — will retry until confirmed
+                await self._publish_transaction_guaranteed()
 
                 # -> HOOK
                 self.state = PumpState.HOOK
                 self.session_id = None
+
+                # If shutdown was requested, exit after completing the transaction
+                if self.shutdown_event.is_set():
+                    break
+
+        logger.debug("[%s] gracefully stopped (tx_seq=%d)", self.device_id, self.tx_seq)
 
 
 # ---------------------------------------------------------------------------
 # Scale Manager
 # ---------------------------------------------------------------------------
 class ScaleManager:
-    """Periodically adjusts the number of running pump coroutines."""
+    """Periodically adjusts the number of running pump coroutines.
+    
+    Supports graceful shutdown: pumps complete their current transaction
+    cycle before being removed, guaranteeing zero sequence gaps.
+    """
 
     def __init__(self, pool):
         self.pool = pool
-        self.tasks = {}  # pump_index -> Task
+        self.tasks = {}   # pump_index -> Task
+        self.pumps = {}   # pump_index -> PumpSim
         self.target = INITIAL_PUMPS
+        self.tx_state = _load_tx_state()  # Load persisted tx_seq on startup
+        self._save_counter = 0  # Batch persistence writes
 
     async def run(self):
         # Initial ramp-up
-        self._scale_to(self.target)
+        await self._scale_to(self.target)
         logger.info("ScaleManager: initial pumps=%d, interval=%ds, step=%d", self.target, SCALE_INTERVAL, STEP_SIZE)
 
         while True:
@@ -485,26 +675,65 @@ class ScaleManager:
             if next_target > MAX_PUMPS:
                 next_target = MIN_PUMPS
             self.target = next_target
-            self._scale_to(self.target)
+            await self._scale_to(self.target)
 
-    def _scale_to(self, count):
+    async def _scale_to(self, count):
         current = len(self.tasks)
         if count > current:
             # scale up
-            for idx in range(current, count): # FIXED: range(current, count) -> 0 to count-1 if current=0
-                pump = PumpSim(idx, self.pool)
+            for idx in range(current, count):
+                pump = PumpSim(idx, self.pool, tx_state=self.tx_state)
                 task = asyncio.get_event_loop().create_task(pump.run())
                 self.tasks[idx] = task
+                self.pumps[idx] = pump
             logger.info("Scaled UP: %d -> %d pumps", current, count)
         elif count < current:
-            # scale down — cancel highest-indexed pumps
+            # scale down — graceful shutdown: signal pumps to finish cycle
             to_remove = sorted(self.tasks.keys(), reverse=True)[: current - count]
+            drain_tasks = []
             for idx in to_remove:
-                self.tasks[idx].cancel()
-                del self.tasks[idx]
-            logger.info("Scaled DOWN: %d -> %d pumps", current, count)
+                pump = self.pumps.get(idx)
+                if pump:
+                    pump.request_shutdown()
+                    drain_tasks.append((idx, self.tasks[idx]))
+
+            # Wait for pumps to finish their current cycle (with timeout)
+            if drain_tasks:
+                logger.info(
+                    "Graceful scale-down: waiting for %d pumps to finish current cycle...",
+                    len(drain_tasks)
+                )
+                for idx, task in drain_tasks:
+                    try:
+                        await asyncio.wait_for(task, timeout=GRACEFUL_SHUTDOWN_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Pump idx=%d did not finish within %ds, cancelling",
+                            idx, GRACEFUL_SHUTDOWN_TIMEOUT
+                        )
+                        task.cancel()
+                    except asyncio.CancelledError:
+                        pass
+                    finally:
+                        self.tasks.pop(idx, None)
+                        self.pumps.pop(idx, None)
+
+            # Persist tx_seq state after scale-down
+            self._persist_tx_state()
+            logger.info("Scaled DOWN: %d -> %d pumps (graceful)", current, count)
         else:
             logger.info("Scale unchanged: %d pumps", count)
+
+        # Periodically persist state (every 10 scale operations)
+        self._save_counter += 1
+        if self._save_counter % 10 == 0:
+            self._persist_tx_state()
+
+    def _persist_tx_state(self):
+        """Persist all pump tx_seq counters to disk."""
+        with _tx_seq_registry_lock:
+            state = dict(_tx_seq_registry)
+        _save_tx_state(state)
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +782,7 @@ class HTTPApi:
 
         old_count = len(self.manager.tasks)
         self.manager.target = target
-        self.manager._scale_to(target)
+        await self.manager._scale_to(target)
 
         return web.json_response({
             "status": "ok",
@@ -606,13 +835,31 @@ async def main():
     # Wait until shutdown
     await stop_event.wait()
 
-    # Cleanup
+    # Cleanup — graceful shutdown of all pumps
     manager_task.cancel()
-    for t in manager.tasks.values():
-        t.cancel()
-    # Let cancellations propagate
-    await asyncio.sleep(0.5)
+    logger.info("Gracefully shutting down %d pumps...", len(manager.pumps))
+    for pump in manager.pumps.values():
+        pump.request_shutdown()
+
+    # Wait for all pump tasks to finish their current cycle
+    if manager.tasks:
+        done, pending = await asyncio.wait(
+            manager.tasks.values(),
+            timeout=GRACEFUL_SHUTDOWN_TIMEOUT,
+        )
+        for t in pending:
+            logger.warning("Force-cancelling pump task that didn't finish in time")
+            t.cancel()
+        await asyncio.sleep(0.5)
+
+    # Persist final state to disk
+    manager._persist_tx_state()
+    logger.info("Persisted tx_seq state for %d devices to %s", len(_tx_seq_registry), TX_STATE_FILE)
+
     pool.stop()
+    if _seq_log_handle is not None:
+        _seq_log_handle.flush()
+        _seq_log_handle.close()
     logger.info("Simulator shut down.")
 
 
