@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"anchr-device-simulator/internal/simulator"
 )
 
 func TestDeviceIdentityForIndex(t *testing.T) {
@@ -21,7 +22,7 @@ func TestDeviceIdentityForIndex(t *testing.T) {
 		{30000, "st-0001", "p-0001"},
 	}
 	for _, tc := range cases {
-		identity := deviceIdentityForIndex(tc.idx)
+		identity := simulator.DeviceIdentityForIndex(tc.idx)
 		if identity.StationID != tc.stationID || identity.PumpID != tc.pumpID {
 			t.Fatalf("idx=%d got %s/%s", tc.idx, identity.StationID, identity.PumpID)
 		}
@@ -29,11 +30,11 @@ func TestDeviceIdentityForIndex(t *testing.T) {
 }
 
 func TestTxRegistrySetAndGet(t *testing.T) {
-	registry := NewTxRegistry()
+	registry := simulator.NewTxRegistry()
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	registry.EnsureDevice("st-0001:p-0001")
-	pending, err := registry.ReservePending(statePath, "st-0001:p-0001", func(nextSeq int64) (PendingTransaction, error) {
-		return PendingTransaction{
+	pending, err := registry.ReservePending(statePath, "st-0001:p-0001", func(nextSeq int64) (simulator.PendingTransaction, error) {
+		return simulator.PendingTransaction{
 			DeviceID:  "st-0001:p-0001",
 			StationID: "st-0001",
 			PumpID:    "p-0001",
@@ -59,9 +60,9 @@ func TestTxRegistrySetAndGet(t *testing.T) {
 
 func TestTxRegistryReloadsPendingState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
-	registry := NewTxRegistry()
-	_, err := registry.ReservePending(statePath, "st-0001:p-0002", func(nextSeq int64) (PendingTransaction, error) {
-		return PendingTransaction{
+	registry := simulator.NewTxRegistry()
+	_, err := registry.ReservePending(statePath, "st-0001:p-0002", func(nextSeq int64) (simulator.PendingTransaction, error) {
+		return simulator.PendingTransaction{
 			DeviceID:  "st-0001:p-0002",
 			StationID: "st-0001",
 			PumpID:    "p-0002",
@@ -75,7 +76,7 @@ func TestTxRegistryReloadsPendingState(t *testing.T) {
 		t.Fatalf("reserve pending tx: %v", err)
 	}
 
-	reloaded := NewTxRegistry()
+	reloaded := simulator.NewTxRegistry()
 	if err := reloaded.Load(statePath); err != nil {
 		t.Fatalf("load persisted tx state: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestTxRegistryReloadsPendingState(t *testing.T) {
 
 func TestLoadConfigSupportsJSON(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	raw := rawConfig{}
+	raw := simulator.RawConfig{}
 	raw.MQTT.Host = "broker"
 	raw.MQTT.Port = 2883
 	raw.Simulation.TenantID = "tenant-a"
@@ -111,12 +112,7 @@ func TestLoadConfigSupportsJSON(t *testing.T) {
 		t.Fatalf("write json config: %v", err)
 	}
 
-	origArgs := os.Args
-	defer func() { os.Args = origArgs; flag.CommandLine = flag.NewFlagSet(origArgs[0], flag.ExitOnError) }()
-	os.Args = []string{origArgs[0], "-config", configPath}
-	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-
-	cfg, err := loadConfig()
+	cfg, err := simulator.LoadConfigFromArgs([]string{"-config", configPath})
 	if err != nil {
 		t.Fatalf("load json config: %v", err)
 	}
