@@ -37,7 +37,8 @@ type Pump struct {
 	lastTXSeq      int64
 	totalizer      float64
 	startTotalizer float64
-	msgSeqs        map[string]int64
+	nextMsgSeq     int64
+	publishMu      sync.Mutex
 	cancel         context.CancelFunc
 	done           chan struct{}
 }
@@ -63,7 +64,6 @@ func NewPump(index int, cfg Config, client mqtt.Client, registry *TxRegistry, se
 		pumpRate:  math.Round((0.5+rng.Float64()*1.5)*100) / 100,
 		lastTXSeq: state.LastIssuedSeq,
 		totalizer: 10000.0 + float64(index*10),
-		msgSeqs:   map[string]int64{"telemetry": 0, "tx": 0, "ack": 0},
 		done:      make(chan struct{}),
 	}
 }
@@ -228,38 +228,36 @@ func (p *Pump) handleCommand(envelope map[string]any) {
 			ackMsg = "Cannot close shift while pumping"
 		}
 	}
-	p.msgSeqs["ack"]++
-	seq := p.msgSeqs["ack"]
-	stationID := p.identity.StationID
-	pumpID := p.identity.PumpID
-	deviceID := p.identity.DeviceID
 	p.mu.Unlock()
 
-	ack := map[string]any{
-		"schema":         "anchr.ack.v1",
-		"schema_version": 1,
-		"message_id":     randomUUID(p.rng),
-		"type":           "ack",
-		"tenant_id":      p.cfg.TenantID,
-		"station_id":     stationID,
-		"pump_id":        pumpID,
-		"device_id":      deviceID,
-		"event_time":     nowRFC3339Millis(),
-		"seq":            seq,
-		"correlation_id": cmdID,
-		"data": map[string]any{
-			"ack": map[string]any{
-				"cmd_id":     cmdID,
-				"type":       cmdType,
-				"status":     ackStatus,
-				"code":       ackCode,
-				"message":    ackMsg,
-				"applied_at": nowRFC3339Millis(),
-				"payload":    ackPayload,
+	if err := p.publishBuiltEnvelope(nil, "ack", false, func(seq int64) (map[string]any, error) {
+		return map[string]any{
+			"schema":         "anchr.ack.v1",
+			"schema_version": 1,
+			"message_id":     randomUUID(p.rng),
+			"type":           "ack",
+			"tenant_id":      p.cfg.TenantID,
+			"station_id":     p.identity.StationID,
+			"pump_id":        p.identity.PumpID,
+			"device_id":      p.identity.DeviceID,
+			"event_time":     nowRFC3339Millis(),
+			"seq":            seq,
+			"correlation_id": cmdID,
+			"data": map[string]any{
+				"ack": map[string]any{
+					"cmd_id":     cmdID,
+					"type":       cmdType,
+					"status":     ackStatus,
+					"code":       ackCode,
+					"message":    ackMsg,
+					"applied_at": nowRFC3339Millis(),
+					"payload":    ackPayload,
+				},
 			},
-		},
+		}, nil
+	}); err != nil {
+		log.Printf("WARN ack publish failed device=%s cmd_id=%s err=%v", p.identity.DeviceID, cmdID, err)
 	}
-	p.publish("ack", ack, 1, false)
 }
 
 func (p *Pump) publishTelemetry() {
@@ -288,12 +286,11 @@ func (p *Pump) publishTelemetry() {
 		"fw_version":             "sim-go-1.0",
 		"health":                 map[string]any{"ok": true},
 	}
-	p.msgSeqs["telemetry"]++
-	seq := p.msgSeqs["telemetry"]
 	p.mu.Unlock()
 
-	envelope := p.baseEnvelope("telemetry", seq, payload)
-	p.publish("telemetry", envelope, 0, true)
+	if err := p.publishGuaranteed(nil, "telemetry", "telemetry", payload, true); err != nil {
+		log.Printf("WARN telemetry publish failed device=%s err=%v", p.identity.DeviceID, err)
+	}
 }
 
 func (p *Pump) publishTransactionGuaranteed() error {
@@ -315,14 +312,12 @@ func (p *Pump) publishTransactionGuaranteed() error {
 		durationMS = 0
 	}
 
-	p.mu.Lock()
-	p.msgSeqs["tx"]++
-	msgSeq := p.msgSeqs["tx"]
-	p.mu.Unlock()
+	p.publishMu.Lock()
+	seq := p.nextMsgSeq + 1
 
 	pending, err := p.registry.ReservePending(p.cfg.TXStateFile, p.identity.DeviceID, func(nextSeq int64) (PendingTransaction, error) {
 		txID := fmt.Sprintf("%s:%d:%d", p.identity.DeviceID, shiftNo, nextSeq)
-		envelope := p.baseEnvelope("tx", msgSeq, map[string]any{
+		envelope := p.baseEnvelope("tx", seq, map[string]any{
 			"tx_id":                        txID,
 			"tx_seq":                       nextSeq,
 			"shift_no":                     shiftNo,
@@ -355,28 +350,27 @@ func (p *Pump) publishTransactionGuaranteed() error {
 		}, nil
 	})
 	if err != nil {
-		p.mu.Lock()
-		p.msgSeqs["tx"]--
-		p.mu.Unlock()
+		p.publishMu.Unlock()
 		return err
 	}
 
 	if err := publishPendingTransaction(nil, p.client, p.cfg, pending); err != nil {
-		p.mu.Lock()
-		p.msgSeqs["tx"]--
-		p.mu.Unlock()
+		p.publishMu.Unlock()
 		return err
 	}
 	if err := p.registry.ConfirmPending(p.cfg.TXStateFile, p.identity.DeviceID, pending.TxSeq); err != nil {
+		p.publishMu.Unlock()
 		return err
 	}
+	p.nextMsgSeq = seq
+	p.publishMu.Unlock()
 
 	p.mu.Lock()
 	p.lastTXSeq = pending.TxSeq
 	p.mu.Unlock()
 	p.seqLogger.Write(map[string]any{
 		"device_id":  p.identity.DeviceID,
-		"seq":        msgSeq,
+		"seq":        seq,
 		"type":       "tx",
 		"message_id": pending.MessageID,
 		"ts":         pending.CreatedAt,
@@ -386,35 +380,56 @@ func (p *Pump) publishTransactionGuaranteed() error {
 	return nil
 }
 
-func (p *Pump) publish(subtopic string, envelope map[string]any, qos byte, writeSeqLog bool) {
+func (p *Pump) publishGuaranteed(ctx context.Context, subtopic, msgType string, data map[string]any, writeSeqLog bool) error {
+	return p.publishBuiltEnvelope(ctx, subtopic, writeSeqLog, func(seq int64) (map[string]any, error) {
+		return p.baseEnvelope(msgType, seq, data), nil
+	})
+}
+
+func (p *Pump) publishBuiltEnvelope(ctx context.Context, subtopic string, writeSeqLog bool, build func(seq int64) (map[string]any, error)) error {
+	p.publishMu.Lock()
+	defer p.publishMu.Unlock()
+
+	seq := p.nextMsgSeq + 1
+	envelope, err := build(seq)
+	if err != nil {
+		return err
+	}
+	if err := p.publishEnvelope(ctx, subtopic, envelope, writeSeqLog); err != nil {
+		return err
+	}
+	p.nextMsgSeq = seq
+	return nil
+}
+
+func (p *Pump) publishEnvelope(ctx context.Context, subtopic string, envelope map[string]any, writeSeqLog bool) error {
 	payload, err := json.Marshal(envelope)
 	if err != nil {
-		log.Printf("ERROR marshal publish payload device=%s subtopic=%s err=%v", p.identity.DeviceID, subtopic, err)
-		return
-	}
-	messageID := envelope["message_id"]
-	eventTime := envelope["event_time"]
-	topic := p.topicFor(subtopic)
-	token := p.client.Publish(topic, qos, false, payload)
-	if qos == 0 {
-		if writeSeqLog {
-			p.seqLogger.Write(map[string]any{
-				"device_id":  p.identity.DeviceID,
-				"seq":        envelope["seq"],
-				"type":       subtopic,
-				"message_id": messageID,
-				"ts":         eventTime,
-			})
-		}
-		return
+		return fmt.Errorf("marshal publish payload device=%s subtopic=%s: %w", p.identity.DeviceID, subtopic, err)
 	}
 
-	go func(deviceID string) {
-		_ = token.WaitTimeout(p.cfg.TXPublishTimeout)
-		if err := token.Error(); err != nil {
-			log.Printf("WARN publish error device=%s subtopic=%s err=%v", deviceID, subtopic, err)
-		}
-	}(p.identity.DeviceID)
+	pending := PendingTransaction{
+		DeviceID:  p.identity.DeviceID,
+		StationID: p.identity.StationID,
+		PumpID:    p.identity.PumpID,
+		Topic:     p.topicFor(subtopic),
+		MessageID: fmt.Sprint(envelope["message_id"]),
+		CreatedAt: fmt.Sprint(envelope["event_time"]),
+		Payload:   payload,
+	}
+	if err := publishPendingTransaction(ctx, p.client, p.cfg, pending); err != nil {
+		return err
+	}
+	if writeSeqLog {
+		p.seqLogger.Write(map[string]any{
+			"device_id":  p.identity.DeviceID,
+			"seq":        envelope["seq"],
+			"type":       subtopic,
+			"message_id": envelope["message_id"],
+			"ts":         envelope["event_time"],
+		})
+	}
+	return nil
 }
 
 func (p *Pump) topicFor(subtopic string) string {

@@ -90,7 +90,7 @@ func (p *MQTTClientPool) Close() {
 
 func publishPendingTransaction(ctx context.Context, client mqtt.Client, cfg Config, pending PendingTransaction) error {
 	for attempt := 1; ; attempt++ {
-		token := client.Publish(pending.Topic, 1, false, pending.Payload)
+		token := client.Publish(pending.Topic, 1, false, []byte(pending.Payload))
 		ok := token.WaitTimeout(cfg.TXPublishTimeout)
 		if ok && token.Error() == nil {
 			return nil
