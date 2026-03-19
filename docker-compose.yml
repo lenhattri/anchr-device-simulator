@@ -1,0 +1,36 @@
+services:
+  emqx:
+    image: emqx/emqx:5.8.4
+    container_name: anchr-emqx
+    ports:
+      - "1883:1883"
+      - "18083:18083"
+    environment:
+      EMQX_NAME: emqx
+      EMQX_HOST: 127.0.0.1
+
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: anchr-device-simulator
+    depends_on:
+      - emqx
+    environment:
+      MQTT_HOST: emqx
+      MQTT_PORT: 1883
+      TENANT_ID: default
+      INITIAL_PUMPS: 1000
+      MIN_PUMPS: 1000
+      MAX_PUMPS: 10000
+      POOL_SIZE: 50
+      SPEED: 10
+      HTTP_ADDR: :8080
+      TX_STATE_FILE: /data/sim-tx-state.json
+    ports:
+      - "8080:8080"
+    volumes:
+      - simulator-state:/data
+
+volumes:
+  simulator-state:
