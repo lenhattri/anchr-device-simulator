@@ -16,20 +16,13 @@ services:
     container_name: anchr-device-simulator
     depends_on:
       - emqx
+    command: ["-config", "/app/config.json"]
     environment:
       MQTT_HOST: emqx
-      MQTT_PORT: 1883
-      TENANT_ID: default
-      INITIAL_PUMPS: 1000
-      MIN_PUMPS: 1000
-      MAX_PUMPS: 10000
-      POOL_SIZE: 50
-      SPEED: 10
-      HTTP_ADDR: :8080
-      TX_STATE_FILE: /data/sim-tx-state.json
     ports:
       - "8080:8080"
     volumes:
+      - ./config.json:/app/config.json:ro
       - simulator-state:/data
 
 volumes:

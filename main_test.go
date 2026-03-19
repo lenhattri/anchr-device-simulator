@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,5 +87,46 @@ func TestTxRegistryReloadsPendingState(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("expected persisted state file: %v", err)
+	}
+}
+
+func TestLoadConfigSupportsJSON(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	raw := rawConfig{}
+	raw.MQTT.Host = "broker"
+	raw.MQTT.Port = 2883
+	raw.Simulation.TenantID = "tenant-a"
+	raw.Simulation.InitialPumps = 1200
+	raw.Simulation.MinPumps = 1000
+	raw.Simulation.MaxPumps = 2000
+	raw.Pool.Size = 25
+	raw.HTTP.Addr = ":9090"
+	raw.Persistence.TXStateFile = "/data/state.json"
+
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal json config: %v", err)
+	}
+	if err := os.WriteFile(configPath, payload, 0o644); err != nil {
+		t.Fatalf("write json config: %v", err)
+	}
+
+	origArgs := os.Args
+	defer func() { os.Args = origArgs; flag.CommandLine = flag.NewFlagSet(origArgs[0], flag.ExitOnError) }()
+	os.Args = []string{origArgs[0], "-config", configPath}
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("load json config: %v", err)
+	}
+	if cfg.MQTTHost != "broker" || cfg.MQTTPort != 2883 {
+		t.Fatalf("unexpected mqtt config: %+v", cfg)
+	}
+	if cfg.TenantID != "tenant-a" || cfg.InitialPumps != 1200 || cfg.MaxPumps != 2000 {
+		t.Fatalf("unexpected simulation config: %+v", cfg)
+	}
+	if cfg.PoolSize != 25 || cfg.HTTPAddr != ":9090" || cfg.TXStateFile != "/data/state.json" {
+		t.Fatalf("unexpected runtime config: %+v", cfg)
 	}
 }
