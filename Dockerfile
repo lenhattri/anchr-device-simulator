@@ -1,10 +1,16 @@
-FROM python:3.9-slim
+FROM golang:1.22-alpine AS builder
+WORKDIR /src
+COPY go.mod .
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/anchr-simulator ./
 
+FROM alpine:3.20
+RUN addgroup -S simulator && adduser -S simulator -G simulator
 WORKDIR /app
-
-RUN pip install paho-mqtt aiohttp pyyaml
-
-COPY simulator.py .
-# Config is optional and provided via Env Vars
-
-CMD ["python", "simulator.py"]
+COPY --from=builder /out/anchr-simulator /usr/local/bin/anchr-simulator
+COPY config.yaml /app/config.yaml
+USER simulator
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/anchr-simulator"]
+CMD ["-config", "/app/config.yaml"]
