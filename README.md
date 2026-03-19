@@ -1,0 +1,77 @@
+# ANCHR Device Simulator
+
+Simulator này phát telemetry/transaction MQTT cho nhiều cột bơm và cung cấp HTTP API để scale số lượng pump đang chạy.
+
+## Bật simulator bằng `config.json`
+
+Mặc định binary sẽ đọc `config.json` ở thư mục làm việc hiện tại. Bạn có thể bật simulator với file cấu hình riêng bằng cờ `-config`:
+
+```bash
+go run . -config ./config.json
+```
+
+Hoặc sau khi build:
+
+```bash
+./anchr-simulator -config ./config.json
+```
+
+### Thứ tự ưu tiên cấu hình
+
+1. Giá trị mặc định trong code.
+2. File cấu hình truyền qua `-config` (`.json` hoặc `.yaml`).
+3. Biến môi trường như `MQTT_HOST`, `INITIAL_PUMPS`, `HTTP_ADDR`.
+
+Điều này có nghĩa là bạn có thể bật phần lớn cấu hình bằng `config.json`, rồi chỉ override vài giá trị bằng env nếu cần.
+
+## Chạy bằng Docker Compose
+
+`docker-compose.yml` đã được cấu hình để mount file `config.json` trong repo vào container và khởi động simulator với file này:
+
+```bash
+docker compose up --build
+```
+
+Nếu muốn bật/tắt hoặc chỉnh simulator, chỉ cần sửa `config.json` rồi chạy lại compose. File này là nguồn cấu hình chính cho cả local run và Docker Compose.
+
+### Các service
+
+- `emqx`: MQTT broker để simulator publish/subscribe.
+- `simulator`: binary Go, đọc `/app/config.json` trong container.
+
+### Dữ liệu persist
+
+Compose vẫn mount volume `simulator-state` vào `/data`. Nếu muốn state file nằm trong volume này, hãy đổi trong `config.json`:
+
+```json
+{
+  "persistence": {
+    "tx_state_file": "/data/sim-tx-state.json"
+  }
+}
+```
+
+## API scale
+
+Sau khi bật compose/local run, API HTTP mặc định lắng nghe ở `:8080`.
+
+- Xem trạng thái:
+
+```bash
+curl http://localhost:8080/status
+```
+
+- Scale số pump:
+
+```bash
+curl -X POST http://localhost:8080/scale \
+  -H 'Content-Type: application/json' \
+  -d '{"target_pumps": 2000}'
+```
+
+## File cấu hình mẫu
+
+Repo giữ sẵn cả:
+
+- `config.json`: cấu hình mặc định cho runtime hiện tại.
+- `config.yaml`: tương thích ngược nếu bạn vẫn muốn chạy bằng YAML.

@@ -1247,7 +1247,7 @@ func replayPendingTransactions(ctx context.Context, cfg Config, pool *MQTTClient
 
 func loadConfig() (Config, error) {
 	var configPath string
-	flag.StringVar(&configPath, "config", "config.yaml", "path to config file")
+	flag.StringVar(&configPath, "config", "config.json", "path to config file (.json or .yaml)")
 	flag.Parse()
 
 	cfg := Config{
@@ -1277,8 +1277,15 @@ func loadConfig() (Config, error) {
 	if configPath != "" {
 		if raw, err := os.ReadFile(configPath); err == nil {
 			var rc rawConfig
-			if err := yaml.Unmarshal(raw, &rc); err != nil {
-				return Config{}, fmt.Errorf("parse config yaml: %w", err)
+			switch strings.ToLower(filepath.Ext(configPath)) {
+			case ".json":
+				if err := json.Unmarshal(raw, &rc); err != nil {
+					return Config{}, fmt.Errorf("parse config json: %w", err)
+				}
+			default:
+				if err := yaml.Unmarshal(raw, &rc); err != nil {
+					return Config{}, fmt.Errorf("parse config yaml: %w", err)
+				}
 			}
 			if rc.MQTT.Host != "" {
 				cfg.MQTTHost = rc.MQTT.Host

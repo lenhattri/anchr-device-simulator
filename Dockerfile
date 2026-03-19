@@ -10,7 +10,8 @@ RUN addgroup -S simulator && adduser -S simulator -G simulator
 WORKDIR /app
 COPY --from=builder /out/anchr-simulator /usr/local/bin/anchr-simulator
 COPY config.yaml /app/config.yaml
+COPY config.json /app/config.json
 USER simulator
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/anchr-simulator"]
-CMD ["-config", "/app/config.yaml"]
+CMD ["-config", "/app/config.json"]
