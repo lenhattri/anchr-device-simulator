@@ -1,0 +1,31 @@
+{
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "tls": false
+  },
+  "simulation": {
+    "tenant_id": "default",
+    "speed": 10,
+    "initial_pumps": 1000,
+    "min_pumps": 1000,
+    "max_pumps": 10000,
+    "step_size": 1000,
+    "scale_interval": 1800
+  },
+  "pool": {
+    "size": 50
+  },
+  "http": {
+    "addr": ":8080"
+  },
+  "persistence": {
+    "tx_state_file": "/tmp/sim-tx-state.json",
+    "persist_interval": 30,
+    "shutdown_timeout": 60
+  },
+  "transaction": {
+    "publish_timeout": 10,
+    "max_retries": 0
+  }
+}
