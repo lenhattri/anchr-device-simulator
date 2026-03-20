@@ -87,7 +87,7 @@ func (c *fakeMQTTClient) publishedPayloads(t *testing.T) []map[string]any {
 	return result
 }
 
-func TestPumpUsesSingleContiguousSequenceAcrossMessages(t *testing.T) {
+func TestPumpUsesIndependentSequencesPerMessageType(t *testing.T) {
 	client := &fakeMQTTClient{}
 	cfg := Config{TenantID: "tenant-a", TXPublishTimeout: time.Second}
 	pump := NewPump(0, cfg, client, NewTxRegistry(), &SeqLogger{})
@@ -112,20 +112,24 @@ func TestPumpUsesSingleContiguousSequenceAcrossMessages(t *testing.T) {
 	if len(payloads) != 3 {
 		t.Fatalf("expected 3 published messages got %d", len(payloads))
 	}
-	for i, envelope := range payloads {
-		if got := int64(envelope["seq"].(float64)); got != int64(i+1) {
-			t.Fatalf("message %d expected seq %d got %d", i, i+1, got)
-		}
+	if got := int64(payloads[0]["seq"].(float64)); got != 1 {
+		t.Fatalf("first telemetry expected seq 1 got %d", got)
+	}
+	if got := int64(payloads[1]["seq"].(float64)); got != 2 {
+		t.Fatalf("second telemetry expected seq 2 got %d", got)
 	}
 	if payloads[2]["type"] != "ack" {
 		t.Fatalf("expected third message to be ack got %v", payloads[2]["type"])
+	}
+	if got := int64(payloads[2]["seq"].(float64)); got != 1 {
+		t.Fatalf("ack expected seq 1 got %d", got)
 	}
 	if payloads[2]["correlation_id"] != "cmd-1" {
 		t.Fatalf("expected ack correlation_id cmd-1 got %v", payloads[2]["correlation_id"])
 	}
 }
 
-func TestPumpTransactionFollowsGlobalMessageSequence(t *testing.T) {
+func TestPumpTransactionSequenceIsIndependentFromTelemetry(t *testing.T) {
 	client := &fakeMQTTClient{}
 	cfg := Config{
 		TenantID:         "tenant-a",
@@ -158,8 +162,11 @@ func TestPumpTransactionFollowsGlobalMessageSequence(t *testing.T) {
 	if len(payloads) != 2 {
 		t.Fatalf("expected 2 published messages got %d", len(payloads))
 	}
-	if got := int64(payloads[1]["seq"].(float64)); got != 2 {
-		t.Fatalf("expected tx message seq 2 got %d", got)
+	if got := int64(payloads[0]["seq"].(float64)); got != 1 {
+		t.Fatalf("expected telemetry seq 1 got %d", got)
+	}
+	if got := int64(payloads[1]["seq"].(float64)); got != 1 {
+		t.Fatalf("expected tx message seq 1 got %d", got)
 	}
 	data := payloads[1]["data"].(map[string]any)
 	if got := int64(data["tx_seq"].(float64)); got != 1 {

@@ -37,7 +37,7 @@ type Pump struct {
 	lastTXSeq      int64
 	totalizer      float64
 	startTotalizer float64
-	nextMsgSeq     int64
+	msgSeqs        map[string]int64
 	publishMu      sync.Mutex
 	cancel         context.CancelFunc
 	done           chan struct{}
@@ -64,6 +64,7 @@ func NewPump(index int, cfg Config, client mqtt.Client, registry *TxRegistry, se
 		pumpRate:  math.Round((0.5+rng.Float64()*1.5)*100) / 100,
 		lastTXSeq: state.LastIssuedSeq,
 		totalizer: 10000.0 + float64(index*10),
+		msgSeqs:   make(map[string]int64),
 		done:      make(chan struct{}),
 	}
 }
@@ -230,7 +231,7 @@ func (p *Pump) handleCommand(envelope map[string]any) {
 	}
 	p.mu.Unlock()
 
-	if err := p.publishBuiltEnvelope(nil, "ack", false, func(seq int64) (map[string]any, error) {
+	if err := p.publishBuiltEnvelope(nil, "ack", "ack", false, func(seq int64) (map[string]any, error) {
 		return map[string]any{
 			"schema":         "anchr.ack.v1",
 			"schema_version": 1,
@@ -313,7 +314,7 @@ func (p *Pump) publishTransactionGuaranteed() error {
 	}
 
 	p.publishMu.Lock()
-	seq := p.nextMsgSeq + 1
+	seq := p.msgSeqs["tx"] + 1
 
 	pending, err := p.registry.ReservePending(p.cfg.TXStateFile, p.identity.DeviceID, func(nextSeq int64) (PendingTransaction, error) {
 		txID := fmt.Sprintf("%s:%d:%d", p.identity.DeviceID, shiftNo, nextSeq)
@@ -362,7 +363,7 @@ func (p *Pump) publishTransactionGuaranteed() error {
 		p.publishMu.Unlock()
 		return err
 	}
-	p.nextMsgSeq = seq
+	p.msgSeqs["tx"] = seq
 	p.publishMu.Unlock()
 
 	p.mu.Lock()
@@ -381,16 +382,16 @@ func (p *Pump) publishTransactionGuaranteed() error {
 }
 
 func (p *Pump) publishGuaranteed(ctx context.Context, subtopic, msgType string, data map[string]any, writeSeqLog bool) error {
-	return p.publishBuiltEnvelope(ctx, subtopic, writeSeqLog, func(seq int64) (map[string]any, error) {
+	return p.publishBuiltEnvelope(ctx, subtopic, msgType, writeSeqLog, func(seq int64) (map[string]any, error) {
 		return p.baseEnvelope(msgType, seq, data), nil
 	})
 }
 
-func (p *Pump) publishBuiltEnvelope(ctx context.Context, subtopic string, writeSeqLog bool, build func(seq int64) (map[string]any, error)) error {
+func (p *Pump) publishBuiltEnvelope(ctx context.Context, subtopic, msgType string, writeSeqLog bool, build func(seq int64) (map[string]any, error)) error {
 	p.publishMu.Lock()
 	defer p.publishMu.Unlock()
 
-	seq := p.nextMsgSeq + 1
+	seq := p.msgSeqs[msgType] + 1
 	envelope, err := build(seq)
 	if err != nil {
 		return err
@@ -398,7 +399,7 @@ func (p *Pump) publishBuiltEnvelope(ctx context.Context, subtopic string, writeS
 	if err := p.publishEnvelope(ctx, subtopic, envelope, writeSeqLog); err != nil {
 		return err
 	}
-	p.nextMsgSeq = seq
+	p.msgSeqs[msgType] = seq
 	return nil
 }
 
