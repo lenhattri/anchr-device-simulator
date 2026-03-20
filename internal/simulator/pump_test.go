@@ -173,3 +173,46 @@ func TestPumpTransactionSequenceIsIndependentFromTelemetry(t *testing.T) {
 		t.Fatalf("expected tx_seq 1 got %d", got)
 	}
 }
+
+func TestPumpTransactionSequenceContinuesFromRegistryState(t *testing.T) {
+	client := &fakeMQTTClient{}
+	cfg := Config{
+		TenantID:         "tenant-a",
+		TXPublishTimeout: time.Second,
+		TXStateFile:      filepath.Join(t.TempDir(), "tx-state.json"),
+	}
+	registry := NewTxRegistry()
+	registry.devices[DeviceIdentityForIndex(0).DeviceID] = DeviceTXState{
+		LastIssuedSeq: 4,
+		LastAckedSeq:  4,
+	}
+	pump := NewPump(0, cfg, client, registry, &SeqLogger{})
+
+	pump.mu.Lock()
+	pump.startTime = time.Now().Add(-2 * time.Minute).UTC()
+	pump.currentVolume = 8.765
+	pump.currentAmount = 175300
+	pump.shiftNo = 3
+	pump.unitPrice = 20000
+	pump.fuelGrade = "RON95"
+	pump.currency = "VND"
+	pump.startTotalizer = 200
+	pump.totalizer = 208.765
+	pump.mu.Unlock()
+
+	if err := pump.publishTransactionGuaranteed(); err != nil {
+		t.Fatalf("publish transaction: %v", err)
+	}
+
+	payloads := client.publishedPayloads(t)
+	if len(payloads) != 1 {
+		t.Fatalf("expected 1 published message got %d", len(payloads))
+	}
+	if got := int64(payloads[0]["seq"].(float64)); got != 5 {
+		t.Fatalf("expected tx message seq 5 got %d", got)
+	}
+	data := payloads[0]["data"].(map[string]any)
+	if got := int64(data["tx_seq"].(float64)); got != 5 {
+		t.Fatalf("expected tx_seq 5 got %d", got)
+	}
+}

@@ -48,6 +48,7 @@ func NewPump(index int, cfg Config, client mqtt.Client, registry *TxRegistry, se
 	source := rand.NewSource(time.Now().UnixNano() + int64(index)*7919)
 	rng := rand.New(source)
 	state := registry.EnsureDevice(identity.DeviceID)
+	txSeq := maxInt64(state.LastIssuedSeq, state.LastAckedSeq)
 	return &Pump{
 		index:     index,
 		identity:  identity,
@@ -64,7 +65,7 @@ func NewPump(index int, cfg Config, client mqtt.Client, registry *TxRegistry, se
 		pumpRate:  math.Round((0.5+rng.Float64()*1.5)*100) / 100,
 		lastTXSeq: state.LastIssuedSeq,
 		totalizer: 10000.0 + float64(index*10),
-		msgSeqs:   make(map[string]int64),
+		msgSeqs:   map[string]int64{"tx": txSeq},
 		done:      make(chan struct{}),
 	}
 }
@@ -314,9 +315,8 @@ func (p *Pump) publishTransactionGuaranteed() error {
 	}
 
 	p.publishMu.Lock()
-	seq := p.msgSeqs["tx"] + 1
-
 	pending, err := p.registry.ReservePending(p.cfg.TXStateFile, p.identity.DeviceID, func(nextSeq int64) (PendingTransaction, error) {
+		seq := nextSeq
 		txID := fmt.Sprintf("%s:%d:%d", p.identity.DeviceID, shiftNo, nextSeq)
 		envelope := p.baseEnvelope("tx", seq, map[string]any{
 			"tx_id":                        txID,
@@ -363,7 +363,7 @@ func (p *Pump) publishTransactionGuaranteed() error {
 		p.publishMu.Unlock()
 		return err
 	}
-	p.msgSeqs["tx"] = seq
+	p.msgSeqs["tx"] = pending.TxSeq
 	p.publishMu.Unlock()
 
 	p.mu.Lock()
@@ -371,7 +371,7 @@ func (p *Pump) publishTransactionGuaranteed() error {
 	p.mu.Unlock()
 	p.seqLogger.Write(map[string]any{
 		"device_id":  p.identity.DeviceID,
-		"seq":        seq,
+		"seq":        pending.TxSeq,
 		"type":       "tx",
 		"message_id": pending.MessageID,
 		"ts":         pending.CreatedAt,
