@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -14,56 +15,87 @@ type MQTTClientPool struct {
 	clients []mqtt.Client
 }
 
+var mqttClientFactory = mqtt.NewClient
+
 func NewMQTTClientPool(cfg Config, onCommand mqtt.MessageHandler) (*MQTTClientPool, error) {
-	pool := &MQTTClientPool{clients: make([]mqtt.Client, 0, cfg.PoolSize)}
+	pool := &MQTTClientPool{clients: make([]mqtt.Client, cfg.PoolSize)}
 	brokerURL := fmt.Sprintf("tcp://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
 	if cfg.MQTTTLS {
 		brokerURL = fmt.Sprintf("tls://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
 	}
 
+	topic := fmt.Sprintf("anchr/v1/%s/+/+/cmd", cfg.TenantID)
+	type connectResult struct {
+		idx    int
+		client mqtt.Client
+		err    error
+	}
+	results := make(chan connectResult, cfg.PoolSize)
+	var wg sync.WaitGroup
 	for i := 0; i < cfg.PoolSize; i++ {
-		clientID := fmt.Sprintf("%s-%d-%d", cfg.MQTTClientIDPrefix, i, time.Now().UnixNano())
-		opts := mqtt.NewClientOptions().
-			AddBroker(brokerURL).
-			SetClientID(clientID).
-			SetOrderMatters(false).
-			SetAutoReconnect(true).
-			SetConnectRetry(true).
-			SetConnectRetryInterval(2 * time.Second).
-			SetKeepAlive(60 * time.Second).
-			SetPingTimeout(10 * time.Second).
-			SetWriteTimeout(DefaultPublishTimeout).
-			SetConnectTimeout(DefaultConnectTimeout).
-			SetDefaultPublishHandler(onCommand)
-		if cfg.MQTTUsername != "" {
-			opts.SetUsername(cfg.MQTTUsername)
-			opts.SetPassword(cfg.MQTTPassword)
-		}
-		if cfg.MQTTTLS {
-			opts.SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
-		}
-		topic := fmt.Sprintf("anchr/v1/%s/+/+/cmd", cfg.TenantID)
-		opts.OnConnect = func(c mqtt.Client) {
-			token := c.Subscribe(topic, 1, onCommand)
-			if ok := token.WaitTimeout(10 * time.Second); !ok || token.Error() != nil {
-				log.Printf("WARN mqtt subscribe failed client=%s topic=%s err=%v", clientID, topic, token.Error())
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			clientID := fmt.Sprintf("%s-%d-%d", cfg.MQTTClientIDPrefix, idx, time.Now().UnixNano())
+			opts := mqtt.NewClientOptions().
+				AddBroker(brokerURL).
+				SetClientID(clientID).
+				SetOrderMatters(false).
+				SetAutoReconnect(true).
+				SetConnectRetry(true).
+				SetConnectRetryInterval(2 * time.Second).
+				SetKeepAlive(60 * time.Second).
+				SetPingTimeout(10 * time.Second).
+				SetWriteTimeout(DefaultPublishTimeout).
+				SetConnectTimeout(DefaultConnectTimeout).
+				SetDefaultPublishHandler(onCommand)
+			if cfg.MQTTUsername != "" {
+				opts.SetUsername(cfg.MQTTUsername)
+				opts.SetPassword(cfg.MQTTPassword)
+			}
+			if cfg.MQTTTLS {
+				opts.SetTLSConfig(&tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
+			}
+			if idx == 0 {
+				opts.OnConnect = func(c mqtt.Client) {
+					token := c.Subscribe(topic, 1, onCommand)
+					if ok := token.WaitTimeout(10 * time.Second); !ok || token.Error() != nil {
+						log.Printf("WARN mqtt subscribe failed client=%s topic=%s err=%v", clientID, topic, token.Error())
+						return
+					}
+					log.Printf("INFO mqtt client connected and subscribed client=%s topic=%s", clientID, topic)
+				}
+			} else {
+				opts.OnConnect = func(mqtt.Client) {
+					log.Printf("INFO mqtt client connected client=%s", clientID)
+				}
+			}
+			opts.OnConnectionLost = func(c mqtt.Client, err error) {
+				log.Printf("WARN mqtt connection lost client=%s err=%v", clientID, err)
+			}
+
+			client := mqttClientFactory(opts)
+			token := client.Connect()
+			if ok := token.WaitTimeout(DefaultConnectTimeout); !ok {
+				results <- connectResult{idx: idx, err: fmt.Errorf("mqtt connect timeout for client %d", idx)}
 				return
 			}
-			log.Printf("INFO mqtt client connected and subscribed client=%s topic=%s", clientID, topic)
-		}
-		opts.OnConnectionLost = func(c mqtt.Client, err error) {
-			log.Printf("WARN mqtt connection lost client=%s err=%v", clientID, err)
-		}
+			if err := token.Error(); err != nil {
+				results <- connectResult{idx: idx, err: fmt.Errorf("mqtt connect error for client %d: %w", idx, err)}
+				return
+			}
+			results <- connectResult{idx: idx, client: client}
+		}(i)
+	}
+	wg.Wait()
+	close(results)
 
-		client := mqtt.NewClient(opts)
-		token := client.Connect()
-		if ok := token.WaitTimeout(DefaultConnectTimeout); !ok {
-			return nil, fmt.Errorf("mqtt connect timeout for client %d", i)
+	for result := range results {
+		if result.err != nil {
+			pool.Close()
+			return nil, result.err
 		}
-		if err := token.Error(); err != nil {
-			return nil, fmt.Errorf("mqtt connect error for client %d: %w", i, err)
-		}
-		pool.clients = append(pool.clients, client)
+		pool.clients[result.idx] = result.client
 	}
 	return pool, nil
 }
