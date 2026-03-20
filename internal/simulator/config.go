@@ -44,6 +44,7 @@ func LoadConfigFromArgs(args []string) (Config, error) {
 		MQTTUsername:       os.Getenv("MQTT_USERNAME"),
 		MQTTPassword:       os.Getenv("MQTT_PASSWORD"),
 		MQTTClientIDPrefix: getEnv("MQTT_CLIENT_ID_PREFIX", "sim-pool"),
+		DebugTXTiming:      getEnvBool("DEBUG_TX_TIMING", false),
 	}
 
 	if configPath != "" {
@@ -85,6 +86,7 @@ func LoadConfigFromArgs(args []string) (Config, error) {
 	cfg.MQTTUsername = getEnv("MQTT_USERNAME", cfg.MQTTUsername)
 	cfg.MQTTPassword = getEnv("MQTT_PASSWORD", cfg.MQTTPassword)
 	cfg.MQTTClientIDPrefix = getEnv("MQTT_CLIENT_ID_PREFIX", cfg.MQTTClientIDPrefix)
+	cfg.DebugTXTiming = getEnvBool("DEBUG_TX_TIMING", cfg.DebugTXTiming)
 
 	if cfg.MinPumps < 0 || cfg.MaxPumps < cfg.MinPumps || cfg.InitialPumps < cfg.MinPumps || cfg.InitialPumps > cfg.MaxPumps {
 		return Config{}, fmt.Errorf("invalid pump bounds min=%d initial=%d max=%d", cfg.MinPumps, cfg.InitialPumps, cfg.MaxPumps)
