@@ -57,9 +57,9 @@ func (r *TxRegistry) Load(path string) error {
 
 func (r *TxRegistry) Save(path string) error {
 	r.mu.RLock()
-	snapshot := r.snapshotLocked()
+	version, snapshot := r.prepareSnapshotLocked()
 	r.mu.RUnlock()
-	return saveTXSnapshot(path, snapshot)
+	return r.persistSnapshot(path, version, snapshot)
 }
 
 func (r *TxRegistry) Len() int {
@@ -90,6 +90,8 @@ func (r *TxRegistry) LastIssued(deviceID string) int64 {
 
 func (r *TxRegistry) ReservePending(path, deviceID string, build func(nextSeq int64) (PendingTransaction, error)) (PendingTransaction, error) {
 	r.mu.Lock()
+	previousState := r.devices[deviceID]
+	existingPending, hadPending := r.pending[deviceID]
 	state := r.devices[deviceID]
 	if existing, ok := r.pending[deviceID]; ok {
 		r.mu.Unlock()
@@ -105,10 +107,18 @@ func (r *TxRegistry) ReservePending(path, deviceID string, build func(nextSeq in
 	state.LastIssuedSeq = nextSeq
 	r.devices[deviceID] = state
 	r.pending[deviceID] = pending
-	snapshot := r.snapshotLocked()
+	version, snapshot := r.prepareSnapshotLocked()
 	r.mu.Unlock()
 
-	if err := saveTXSnapshot(path, snapshot); err != nil {
+	if err := r.persistSnapshot(path, version, snapshot); err != nil {
+		r.mu.Lock()
+		r.devices[deviceID] = previousState
+		if hadPending {
+			r.pending[deviceID] = existingPending
+		} else {
+			delete(r.pending, deviceID)
+		}
+		r.mu.Unlock()
 		return PendingTransaction{}, err
 	}
 	return pending, nil
@@ -116,6 +126,8 @@ func (r *TxRegistry) ReservePending(path, deviceID string, build func(nextSeq in
 
 func (r *TxRegistry) ConfirmPending(path, deviceID string, txSeq int64) error {
 	r.mu.Lock()
+	previousState := r.devices[deviceID]
+	previousPending, hadPending := r.pending[deviceID]
 	state := r.devices[deviceID]
 	if txSeq > state.LastIssuedSeq {
 		state.LastIssuedSeq = txSeq
@@ -127,9 +139,20 @@ func (r *TxRegistry) ConfirmPending(path, deviceID string, txSeq int64) error {
 	if pending, ok := r.pending[deviceID]; ok && pending.TxSeq <= txSeq {
 		delete(r.pending, deviceID)
 	}
-	snapshot := r.snapshotLocked()
+	version, snapshot := r.prepareSnapshotLocked()
 	r.mu.Unlock()
-	return saveTXSnapshot(path, snapshot)
+	if err := r.persistSnapshot(path, version, snapshot); err != nil {
+		r.mu.Lock()
+		r.devices[deviceID] = previousState
+		if hadPending {
+			r.pending[deviceID] = previousPending
+		} else {
+			delete(r.pending, deviceID)
+		}
+		r.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (r *TxRegistry) PendingTransactions() []PendingTransaction {
@@ -166,16 +189,46 @@ func (r *TxRegistry) snapshotLocked() persistedTXState {
 	return persistedTXState{Devices: devices, Pending: pending}
 }
 
+func (r *TxRegistry) prepareSnapshotLocked() (uint64, persistedTXState) {
+	r.snapshotVersion++
+	return r.snapshotVersion, r.snapshotLocked()
+}
+
+func (r *TxRegistry) persistSnapshot(path string, version uint64, snapshot persistedTXState) error {
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
+
+	if version < r.persistedVersion {
+		return nil
+	}
+	if err := saveTXSnapshot(path, snapshot); err != nil {
+		return err
+	}
+	r.persistedVersion = version
+	return nil
+}
+
 func saveTXSnapshot(path string, snapshot persistedTXState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	payload, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(payload); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

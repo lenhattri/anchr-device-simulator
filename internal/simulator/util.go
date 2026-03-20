@@ -113,6 +113,20 @@ func maxInt64(a, b int64) int64 {
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 
+func simulatedInterval(base time.Duration, speed int) time.Duration {
+	return base / time.Duration(maxInt(1, speed))
+}
+
+func simulatedSecondsToTicks(totalSeconds, secondsPerTick int) int {
+	if secondsPerTick <= 0 {
+		secondsPerTick = 1
+	}
+	if totalSeconds <= 0 {
+		return 1
+	}
+	return maxInt(1, (totalSeconds+secondsPerTick-1)/secondsPerTick)
+}
+
 func asInt(v any) (int, bool) {
 	switch t := v.(type) {
 	case int:

@@ -24,6 +24,14 @@ Hoặc sau khi build:
 
 Điều này có nghĩa là bạn có thể bật phần lớn cấu hình bằng `config.json`, rồi chỉ override vài giá trị bằng env nếu cần.
 
+### Ghi chú về `simulation.speed`
+
+`speed` là hệ số time-scale của simulator:
+
+- Tăng `speed` sẽ rút ngắn thời gian chờ thực tế giữa các lần publish.
+- Simulator vẫn giữ mật độ telemetry theo thời gian mô phỏng (không còn bị giảm số tick khi tăng speed).
+- Ví dụ `speed: 10` nghĩa là chu kỳ chờ 1 giây mô phỏng chỉ còn ~100ms ngoài đời thực.
+
 ## Chạy bằng Docker Compose
 
 `docker-compose.yml` đã được cấu hình để mount file `config.json` trong repo vào container và khởi động simulator với file này:
