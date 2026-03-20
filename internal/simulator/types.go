@@ -140,7 +140,10 @@ type persistedTXState struct {
 }
 
 type TxRegistry struct {
-	mu      sync.RWMutex
-	devices map[string]DeviceTXState
-	pending map[string]PendingTransaction
+	mu               sync.RWMutex
+	persistMu        sync.Mutex
+	devices          map[string]DeviceTXState
+	pending          map[string]PendingTransaction
+	snapshotVersion  uint64
+	persistedVersion uint64
 }

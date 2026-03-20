@@ -2,6 +2,8 @@ package simulator
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -214,5 +216,48 @@ func TestPumpTransactionSequenceContinuesFromRegistryState(t *testing.T) {
 	data := payloads[0]["data"].(map[string]any)
 	if got := int64(data["tx_seq"].(float64)); got != 5 {
 		t.Fatalf("expected tx_seq 5 got %d", got)
+	}
+}
+
+func TestSimulatedSecondsToTicksPreservesTelemetryDensityAtHigherSpeed(t *testing.T) {
+	if got := simulatedSecondsToTicks(60, 5); got != 12 {
+		t.Fatalf("expected 12 idle ticks for 60 simulated seconds got %d", got)
+	}
+	if got := simulatedSecondsToTicks(37, 1); got != 37 {
+		t.Fatalf("expected 37 pump ticks for 37 simulated seconds got %d", got)
+	}
+}
+
+func TestSimulatedIntervalScalesWallClockTimeBySpeed(t *testing.T) {
+	if got := simulatedInterval(5*time.Second, 10); got != 500*time.Millisecond {
+		t.Fatalf("expected 500ms interval got %s", got)
+	}
+	if got := simulatedInterval(1*time.Second, 20); got != 50*time.Millisecond {
+		t.Fatalf("expected 50ms interval got %s", got)
+	}
+}
+
+func TestReservePendingRollsBackStateWhenPersistFails(t *testing.T) {
+	registry := NewTxRegistry()
+	parentFile := filepath.Join(t.TempDir(), "tx-state-parent")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	path := filepath.Join(parentFile, "tx-state.json")
+
+	_, err := registry.ReservePending(path, "st-0001:p-0001", func(nextSeq int64) (PendingTransaction, error) {
+		return PendingTransaction{DeviceID: "st-0001:p-0001", TxSeq: nextSeq}, nil
+	})
+	if err == nil {
+		t.Fatalf("expected reserve pending to fail")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected a persistence failure other than os.ErrNotExist got %v", err)
+	}
+	if got := registry.PendingCount(); got != 0 {
+		t.Fatalf("expected no pending transactions after rollback got %d", got)
+	}
+	if got := registry.LastIssued("st-0001:p-0001"); got != 0 {
+		t.Fatalf("expected last issued seq rollback to 0 got %d", got)
 	}
 }

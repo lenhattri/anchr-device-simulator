@@ -97,13 +97,13 @@ func (p *Pump) Run(ctx context.Context) {
 				return
 			}
 			idleSecs := p.rng.Intn(241) + 60
-			idleTicks := maxInt(1, idleSecs/maxInt(1, p.cfg.Speed*5))
+			idleTicks := simulatedSecondsToTicks(idleSecs, 5)
 			for i := 0; i < idleTicks; i++ {
 				if ctx.Err() != nil {
 					return
 				}
 				p.publishTelemetry()
-				if !sleepWithContext(ctx, 5*time.Second/time.Duration(maxInt(1, p.cfg.Speed))) {
+				if !sleepWithContext(ctx, simulatedInterval(5*time.Second, p.cfg.Speed)) {
 					return
 				}
 			}
@@ -122,7 +122,7 @@ func (p *Pump) Run(ctx context.Context) {
 
 		case StateLift:
 			p.publishTelemetry()
-			liftDelay := time.Duration(math.Max(1, 3+p.rng.Float64()*5)) * time.Second / time.Duration(maxInt(1, p.cfg.Speed))
+			liftDelay := simulatedInterval(time.Duration(math.Max(1, 3+p.rng.Float64()*5))*time.Second, p.cfg.Speed)
 			if !sleepWithContext(ctx, liftDelay) {
 				p.mu.Lock()
 				p.resetSessionLocked()
@@ -142,14 +142,14 @@ func (p *Pump) Run(ctx context.Context) {
 
 		case StatePump:
 			fillSecs := p.rng.Intn(91) + 30
-			pumpTicks := maxInt(1, fillSecs/maxInt(1, p.cfg.Speed))
+			pumpTicks := simulatedSecondsToTicks(fillSecs, 1)
 			for i := 0; i < pumpTicks; i++ {
 				p.mu.Lock()
-				p.currentVolume += p.pumpRate * float64(p.cfg.Speed)
+				p.currentVolume += p.pumpRate
 				p.currentAmount = p.currentVolume * float64(p.unitPrice)
 				p.mu.Unlock()
 				p.publishTelemetry()
-				if !sleepWithContext(ctx, time.Second) {
+				if !sleepWithContext(ctx, simulatedInterval(time.Second, p.cfg.Speed)) {
 					p.mu.Lock()
 					p.resetSessionLocked()
 					p.mu.Unlock()
