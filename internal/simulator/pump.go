@@ -471,23 +471,25 @@ func (p *Pump) logTXTiming(pending PendingTransaction, endTime, reserveStartedAt
 	reserveMS := durationMillis(reserveStartedAt, reserveCompletedAt)
 	publishMS := durationMillis(reserveCompletedAt, publishCompletedAt)
 	confirmMS := durationMillis(publishCompletedAt, confirmCompletedAt)
-	totalMS := durationMillis(endTime, maxTime(confirmCompletedAt, publishCompletedAt, reserveCompletedAt))
+	stageLatencyMS := txStageLatency(stage, reserveMS, publishMS, confirmMS)
+	sinceEndMS := durationMillis(endTime, maxTime(confirmCompletedAt, publishCompletedAt, reserveCompletedAt))
 	args := []any{
 		p.identity.DeviceID,
 		pending.TxSeq,
 		stage,
 		pending.MessageID,
 		endTime.Format(time.RFC3339Nano),
+		stageLatencyMS,
+		sinceEndMS,
 		reserveMS,
 		publishMS,
 		confirmMS,
-		totalMS,
 	}
 	if err != nil {
-		log.Printf("DEBUG tx timing device=%s tx_seq=%d stage=%s message_id=%s end_time=%s reserve_ms=%d publish_ms=%d confirm_ms=%d total_ms=%d err=%v", append(args, err)...)
+		log.Printf("DEBUG tx latency device=%s tx_seq=%d stage=%s message_id=%s end_time=%s stage_latency_ms=%d since_end_ms=%d reserve_ms=%d publish_ms=%d confirm_ms=%d err=%v", append(args, err)...)
 		return
 	}
-	log.Printf("DEBUG tx timing device=%s tx_seq=%d stage=%s message_id=%s end_time=%s reserve_ms=%d publish_ms=%d confirm_ms=%d total_ms=%d", args...)
+	log.Printf("DEBUG tx latency device=%s tx_seq=%d stage=%s message_id=%s end_time=%s stage_latency_ms=%d since_end_ms=%d reserve_ms=%d publish_ms=%d confirm_ms=%d", args...)
 }
 
 func durationMillis(start, end time.Time) int64 {
@@ -505,4 +507,17 @@ func maxTime(times ...time.Time) time.Time {
 		}
 	}
 	return latest
+}
+
+func txStageLatency(stage string, reserveMS, publishMS, confirmMS int64) int64 {
+	switch stage {
+	case "reserved":
+		return reserveMS
+	case "published", "publish_failed":
+		return publishMS
+	case "confirmed", "confirm_failed":
+		return confirmMS
+	default:
+		return 0
+	}
 }

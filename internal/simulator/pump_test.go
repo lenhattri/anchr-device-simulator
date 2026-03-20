@@ -259,8 +259,13 @@ func TestPumpDebugTXTimingLogsStages(t *testing.T) {
 	}
 
 	output := logBuffer.String()
-	if !strings.Contains(output, "DEBUG tx timing") {
-		t.Fatalf("expected tx timing debug log got %q", output)
+	if !strings.Contains(output, "DEBUG tx latency") {
+		t.Fatalf("expected tx latency debug log got %q", output)
+	}
+	for _, field := range []string{"stage_latency_ms=", "since_end_ms=", "reserve_ms=", "publish_ms=", "confirm_ms="} {
+		if !strings.Contains(output, field) {
+			t.Fatalf("expected %s in tx latency log got %q", field, output)
+		}
 	}
 	for _, stage := range []string{"stage=reserved", "stage=published", "stage=confirmed"} {
 		if !strings.Contains(output, stage) {

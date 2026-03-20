@@ -41,7 +41,7 @@ Hoặc sau khi build:
 ### Debug tx timing
 
 - Bật `DEBUG_TX_TIMING=true` để log chi tiết từng giai đoạn tx trong simulator.
-- Log sẽ cho biết tx đang chậm ở bước `reserved`, `published`, hay `confirmed`, cùng các mốc `reserve_ms`, `publish_ms`, `confirm_ms`, `total_ms`.
+- Log sẽ cho biết tx đang chậm ở bước `reserved`, `published`, hay `confirmed`, cùng các mốc `stage_latency_ms`, `since_end_ms`, `reserve_ms`, `publish_ms`, `confirm_ms`.
 - Mục đích là để phân biệt tx chậm do simulator giữ lại trước khi publish hay do downstream ingest/Kafka.
 
 ## Chạy bằng Docker Compose
