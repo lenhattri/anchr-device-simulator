@@ -41,6 +41,7 @@ type Config struct {
 	MQTTUsername       string
 	MQTTPassword       string
 	MQTTClientIDPrefix string
+	DebugTXTiming      bool
 }
 
 type RawConfig struct {

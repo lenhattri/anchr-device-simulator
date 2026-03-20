@@ -315,6 +315,7 @@ func (p *Pump) publishTransactionGuaranteed() error {
 	}
 
 	p.publishMu.Lock()
+	reserveStartedAt := time.Now().UTC()
 	pending, err := p.registry.ReservePending(p.cfg.TXStateFile, p.identity.DeviceID, func(nextSeq int64) (PendingTransaction, error) {
 		seq := nextSeq
 		txID := fmt.Sprintf("%s:%d:%d", p.identity.DeviceID, shiftNo, nextSeq)
@@ -354,15 +355,25 @@ func (p *Pump) publishTransactionGuaranteed() error {
 		p.publishMu.Unlock()
 		return err
 	}
+	reserveCompletedAt := time.Now().UTC()
+	p.logTXTiming(pending, endTime, reserveStartedAt, reserveCompletedAt, time.Time{}, time.Time{}, "reserved", nil)
 
 	if err := publishPendingTransaction(nil, p.client, p.cfg, pending); err != nil {
+		publishFailedAt := time.Now().UTC()
+		p.logTXTiming(pending, endTime, reserveStartedAt, reserveCompletedAt, publishFailedAt, time.Time{}, "publish_failed", err)
 		p.publishMu.Unlock()
 		return err
 	}
+	publishCompletedAt := time.Now().UTC()
+	p.logTXTiming(pending, endTime, reserveStartedAt, reserveCompletedAt, publishCompletedAt, time.Time{}, "published", nil)
 	if err := p.registry.ConfirmPending(p.cfg.TXStateFile, p.identity.DeviceID, pending.TxSeq); err != nil {
+		confirmFailedAt := time.Now().UTC()
+		p.logTXTiming(pending, endTime, reserveStartedAt, reserveCompletedAt, publishCompletedAt, confirmFailedAt, "confirm_failed", err)
 		p.publishMu.Unlock()
 		return err
 	}
+	confirmCompletedAt := time.Now().UTC()
+	p.logTXTiming(pending, endTime, reserveStartedAt, reserveCompletedAt, publishCompletedAt, confirmCompletedAt, "confirmed", nil)
 	p.msgSeqs["tx"] = pending.TxSeq
 	p.publishMu.Unlock()
 
@@ -451,4 +462,47 @@ func (p *Pump) baseEnvelope(msgType string, seq int64, data map[string]any) map[
 		"seq":            seq,
 		"data":           data,
 	}
+}
+
+func (p *Pump) logTXTiming(pending PendingTransaction, endTime, reserveStartedAt, reserveCompletedAt, publishCompletedAt, confirmCompletedAt time.Time, stage string, err error) {
+	if !p.cfg.DebugTXTiming {
+		return
+	}
+	reserveMS := durationMillis(reserveStartedAt, reserveCompletedAt)
+	publishMS := durationMillis(reserveCompletedAt, publishCompletedAt)
+	confirmMS := durationMillis(publishCompletedAt, confirmCompletedAt)
+	totalMS := durationMillis(endTime, maxTime(confirmCompletedAt, publishCompletedAt, reserveCompletedAt))
+	args := []any{
+		p.identity.DeviceID,
+		pending.TxSeq,
+		stage,
+		pending.MessageID,
+		endTime.Format(time.RFC3339Nano),
+		reserveMS,
+		publishMS,
+		confirmMS,
+		totalMS,
+	}
+	if err != nil {
+		log.Printf("DEBUG tx timing device=%s tx_seq=%d stage=%s message_id=%s end_time=%s reserve_ms=%d publish_ms=%d confirm_ms=%d total_ms=%d err=%v", append(args, err)...)
+		return
+	}
+	log.Printf("DEBUG tx timing device=%s tx_seq=%d stage=%s message_id=%s end_time=%s reserve_ms=%d publish_ms=%d confirm_ms=%d total_ms=%d", args...)
+}
+
+func durationMillis(start, end time.Time) int64 {
+	if start.IsZero() || end.IsZero() {
+		return 0
+	}
+	return end.Sub(start).Milliseconds()
+}
+
+func maxTime(times ...time.Time) time.Time {
+	var latest time.Time
+	for _, ts := range times {
+		if ts.After(latest) {
+			latest = ts
+		}
+	}
+	return latest
 }

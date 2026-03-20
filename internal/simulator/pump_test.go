@@ -1,10 +1,13 @@
 package simulator
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -216,6 +219,53 @@ func TestPumpTransactionSequenceContinuesFromRegistryState(t *testing.T) {
 	data := payloads[0]["data"].(map[string]any)
 	if got := int64(data["tx_seq"].(float64)); got != 5 {
 		t.Fatalf("expected tx_seq 5 got %d", got)
+	}
+}
+
+func TestPumpDebugTXTimingLogsStages(t *testing.T) {
+	client := &fakeMQTTClient{}
+	cfg := Config{
+		TenantID:         "tenant-a",
+		TXPublishTimeout: time.Second,
+		TXStateFile:      filepath.Join(t.TempDir(), "tx-state.json"),
+		DebugTXTiming:    true,
+	}
+	pump := NewPump(0, cfg, client, NewTxRegistry(), &SeqLogger{})
+
+	pump.mu.Lock()
+	pump.startTime = time.Now().Add(-2 * time.Minute).UTC()
+	pump.currentVolume = 12.345
+	pump.currentAmount = 246900
+	pump.shiftNo = 7
+	pump.unitPrice = 20000
+	pump.fuelGrade = "RON95"
+	pump.currency = "VND"
+	pump.startTotalizer = 100
+	pump.totalizer = 112.345
+	pump.mu.Unlock()
+
+	var logBuffer bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logBuffer)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	if err := pump.publishTransactionGuaranteed(); err != nil {
+		t.Fatalf("publish transaction: %v", err)
+	}
+
+	output := logBuffer.String()
+	if !strings.Contains(output, "DEBUG tx timing") {
+		t.Fatalf("expected tx timing debug log got %q", output)
+	}
+	for _, stage := range []string{"stage=reserved", "stage=published", "stage=confirmed"} {
+		if !strings.Contains(output, stage) {
+			t.Fatalf("expected %s in tx timing log got %q", stage, output)
+		}
 	}
 }
 

@@ -102,6 +102,21 @@ func TestLoadConfigUsesDefaultTXPublishTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEnablesDebugTXTimingFromEnv(t *testing.T) {
+	if err := os.Setenv("DEBUG_TX_TIMING", "true"); err != nil {
+		t.Fatalf("set DEBUG_TX_TIMING: %v", err)
+	}
+	defer os.Unsetenv("DEBUG_TX_TIMING")
+
+	cfg, err := simulator.LoadConfigFromArgs([]string{"-config", filepath.Join(t.TempDir(), "missing.json")})
+	if err != nil {
+		t.Fatalf("load config defaults: %v", err)
+	}
+	if !cfg.DebugTXTiming {
+		t.Fatal("expected debug tx timing to be enabled from env")
+	}
+}
+
 func TestLoadConfigSupportsJSON(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	raw := simulator.RawConfig{}

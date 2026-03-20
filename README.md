@@ -38,6 +38,12 @@ Hoặc sau khi build:
 - Giá trị quá lớn sẽ làm tx bị treo lâu sau khi vừa kết thúc phiên bơm nếu broker phản hồi chậm hoặc mất ACK.
 - Mặc định hiện tại là `10` giây để tránh retry quá sớm khi broker đang bận, nhưng bạn vẫn có thể giảm giá trị này nếu muốn tx retry nhanh hơn.
 
+### Debug tx timing
+
+- Bật `DEBUG_TX_TIMING=true` để log chi tiết từng giai đoạn tx trong simulator.
+- Log sẽ cho biết tx đang chậm ở bước `reserved`, `published`, hay `confirmed`, cùng các mốc `reserve_ms`, `publish_ms`, `confirm_ms`, `total_ms`.
+- Mục đích là để phân biệt tx chậm do simulator giữ lại trước khi publish hay do downstream ingest/Kafka.
+
 ## Chạy bằng Docker Compose
 
 `docker-compose.yml` đã được cấu hình để mount file `config.json` trong repo vào container và khởi động simulator với file này:
