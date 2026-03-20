@@ -1,8 +1,8 @@
 {
   "mqtt": {
-    "host": "localhost",
-    "port": 1883,
-    "tls": false
+    "host": "mqtt.hisatochii.id.vn",
+    "port": 8883,
+    "tls": true
   },
   "simulation": {
     "tenant_id": "default",
