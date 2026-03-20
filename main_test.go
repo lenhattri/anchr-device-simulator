@@ -92,13 +92,13 @@ func TestTxRegistryReloadsPendingState(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsToFastTXPublishTimeout(t *testing.T) {
+func TestLoadConfigUsesDefaultTXPublishTimeout(t *testing.T) {
 	cfg, err := simulator.LoadConfigFromArgs([]string{"-config", filepath.Join(t.TempDir(), "missing.json")})
 	if err != nil {
 		t.Fatalf("load config defaults: %v", err)
 	}
-	if cfg.TXPublishTimeout != time.Second {
-		t.Fatalf("expected default tx publish timeout 1s got %s", cfg.TXPublishTimeout)
+	if cfg.TXPublishTimeout != 10*time.Second {
+		t.Fatalf("expected default tx publish timeout 10s got %s", cfg.TXPublishTimeout)
 	}
 }
 

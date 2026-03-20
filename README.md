@@ -36,7 +36,7 @@ Hoặc sau khi build:
 
 - `transaction.publish_timeout` là thời gian tối đa chờ PUBACK cho mỗi lần publish transaction.
 - Giá trị quá lớn sẽ làm tx bị treo lâu sau khi vừa kết thúc phiên bơm nếu broker phản hồi chậm hoặc mất ACK.
-- Mặc định hiện tại là `1` giây để tx retry sớm hơn mà vẫn giữ cơ chế pending transaction nhằm tránh gap `tx_seq`.
+- Mặc định hiện tại là `10` giây để tránh retry quá sớm khi broker đang bận, nhưng bạn vẫn có thể giảm giá trị này nếu muốn tx retry nhanh hơn.
 
 ## Chạy bằng Docker Compose
 

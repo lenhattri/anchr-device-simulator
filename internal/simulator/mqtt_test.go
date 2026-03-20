@@ -1,9 +1,12 @@
 package simulator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -192,6 +195,54 @@ func TestNewMQTTClientPoolConnectsClientsConcurrently(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected mqtt client pool creation to finish after releasing connects")
+	}
+}
+
+func TestLogPublishRetryOmitsZeroTxSeqForNonTransactionMessages(t *testing.T) {
+	var logBuffer bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logBuffer)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	logPublishRetry(PendingTransaction{
+		DeviceID: "st-0001:p-0001",
+		Topic:    "anchr/v1/default/st-0001/p-0001/telemetry",
+	}, 1, errors.New("publish timeout waiting for PUBACK"))
+
+	output := logBuffer.String()
+	if !strings.Contains(output, "subtopic=telemetry") {
+		t.Fatalf("expected telemetry subtopic in log got %q", output)
+	}
+	if strings.Contains(output, "tx_seq=0") {
+		t.Fatalf("did not expect zero tx_seq in non-transaction retry log got %q", output)
+	}
+}
+
+func TestLogPublishRetryIncludesTxSeqForTransactions(t *testing.T) {
+	var logBuffer bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logBuffer)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+	}()
+
+	logPublishRetry(PendingTransaction{
+		DeviceID: "st-0001:p-0001",
+		Topic:    "anchr/v1/default/st-0001/p-0001/tx",
+		TxSeq:    19,
+	}, 1, errors.New("publish timeout waiting for PUBACK"))
+
+	output := logBuffer.String()
+	if !strings.Contains(output, "subtopic=tx") || !strings.Contains(output, "tx_seq=19") {
+		t.Fatalf("expected tx subtopic and tx_seq in log got %q", output)
 	}
 }
 

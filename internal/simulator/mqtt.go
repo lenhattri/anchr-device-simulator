@@ -132,9 +132,9 @@ func publishPendingTransaction(ctx context.Context, client mqtt.Client, cfg Conf
 		if !ok && err == nil {
 			err = fmt.Errorf("publish timeout waiting for PUBACK")
 		}
-		log.Printf("WARN tx publish retry device=%s attempt=%d tx_seq=%d err=%v", pending.DeviceID, attempt, pending.TxSeq, err)
+		logPublishRetry(pending, attempt, err)
 		if cfg.MaxTXRetries > 0 && attempt == cfg.MaxTXRetries {
-			log.Printf("WARN tx publish reached configured retry threshold device=%s tx_seq=%d threshold=%d; continuing until confirmed to avoid sequence gaps", pending.DeviceID, pending.TxSeq, cfg.MaxTXRetries)
+			logPublishRetryThreshold(pending, cfg.MaxTXRetries)
 		}
 
 		backoff := publishRetryBackoff(attempt)
@@ -158,4 +158,31 @@ func publishRetryBackoff(attempt int) time.Duration {
 		return 2 * time.Second
 	}
 	return backoff
+}
+
+func logPublishRetry(pending PendingTransaction, attempt int, err error) {
+	subtopic := topicTail(pending.Topic)
+	if pending.TxSeq > 0 {
+		log.Printf("WARN mqtt publish retry device=%s subtopic=%s attempt=%d tx_seq=%d err=%v", pending.DeviceID, subtopic, attempt, pending.TxSeq, err)
+		return
+	}
+	log.Printf("WARN mqtt publish retry device=%s subtopic=%s attempt=%d err=%v", pending.DeviceID, subtopic, attempt, err)
+}
+
+func logPublishRetryThreshold(pending PendingTransaction, threshold int) {
+	subtopic := topicTail(pending.Topic)
+	if pending.TxSeq > 0 {
+		log.Printf("WARN mqtt publish reached configured retry threshold device=%s subtopic=%s tx_seq=%d threshold=%d; continuing until confirmed to avoid sequence gaps", pending.DeviceID, subtopic, pending.TxSeq, threshold)
+		return
+	}
+	log.Printf("WARN mqtt publish reached configured retry threshold device=%s subtopic=%s threshold=%d", pending.DeviceID, subtopic, threshold)
+}
+
+func topicTail(topic string) string {
+	for i := len(topic) - 1; i >= 0; i-- {
+		if topic[i] == '/' {
+			return topic[i+1:]
+		}
+	}
+	return topic
 }

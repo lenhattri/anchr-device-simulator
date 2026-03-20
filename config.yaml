@@ -23,5 +23,5 @@ persistence:
   shutdown_timeout: 60
 
 transaction:
-  publish_timeout: 1
+  publish_timeout: 10
   max_retries: 0
