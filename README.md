@@ -32,6 +32,12 @@ Hoặc sau khi build:
 - Simulator vẫn giữ mật độ telemetry theo thời gian mô phỏng (không còn bị giảm số tick khi tăng speed).
 - Ví dụ `speed: 10` nghĩa là chu kỳ chờ 1 giây mô phỏng chỉ còn ~100ms ngoài đời thực.
 
+### Ghi chú về `transaction.publish_timeout`
+
+- `transaction.publish_timeout` là thời gian tối đa chờ PUBACK cho mỗi lần publish transaction.
+- Giá trị quá lớn sẽ làm tx bị treo lâu sau khi vừa kết thúc phiên bơm nếu broker phản hồi chậm hoặc mất ACK.
+- Mặc định hiện tại là `1` giây để tx retry sớm hơn mà vẫn giữ cơ chế pending transaction nhằm tránh gap `tx_seq`.
+
 ## Chạy bằng Docker Compose
 
 `docker-compose.yml` đã được cấu hình để mount file `config.json` trong repo vào container và khởi động simulator với file này:

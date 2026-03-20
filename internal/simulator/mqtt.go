@@ -105,7 +105,7 @@ func publishPendingTransaction(ctx context.Context, client mqtt.Client, cfg Conf
 			log.Printf("WARN tx publish reached configured retry threshold device=%s tx_seq=%d threshold=%d; continuing until confirmed to avoid sequence gaps", pending.DeviceID, pending.TxSeq, cfg.MaxTXRetries)
 		}
 
-		backoff := time.Duration(minInt(1<<uint(minInt(attempt, 5)), 30)) * time.Second
+		backoff := publishRetryBackoff(attempt)
 		if ctx != nil {
 			if !sleepWithContext(ctx, backoff) {
 				return ctx.Err()
@@ -114,4 +114,16 @@ func publishPendingTransaction(ctx context.Context, client mqtt.Client, cfg Conf
 		}
 		time.Sleep(backoff)
 	}
+}
+
+func publishRetryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	shift := minInt(attempt-1, 4)
+	backoff := 200 * time.Millisecond * time.Duration(1<<uint(shift))
+	if backoff > 2*time.Second {
+		return 2 * time.Second
+	}
+	return backoff
 }

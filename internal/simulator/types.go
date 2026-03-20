@@ -14,7 +14,7 @@ const (
 	DefaultHTTPAddr           = ":8080"
 	DefaultPersistInterval    = 30 * time.Second
 	DefaultConnectTimeout     = 10 * time.Second
-	DefaultPublishTimeout     = 10 * time.Second
+	DefaultPublishTimeout     = 1 * time.Second
 	DefaultShutdownTimeout    = 60 * time.Second
 	DefaultSessionStartJitter = 10 * time.Second
 )

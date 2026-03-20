@@ -118,20 +118,14 @@ func (a *App) Close() {
 	}
 }
 
-const (
-	replayPendingTxDetailThreshold = 10
-	replayPendingTxProgressEvery   = 100
-)
-
 func replayPendingTransactions(ctx context.Context, cfg Config, pool *MQTTClientPool, registry *TxRegistry, seqLogger *SeqLogger) error {
 	pendingTransactions := registry.PendingTransactions()
 	if len(pendingTransactions) == 0 {
 		return nil
 	}
 
-	detailedLogging := len(pendingTransactions) <= replayPendingTxDetailThreshold
-	log.Printf("INFO replaying pending transactions count=%d detailed_logging=%t", len(pendingTransactions), detailedLogging)
-	for idx, pending := range pendingTransactions {
+	log.Printf("INFO replaying pending transactions count=%d", len(pendingTransactions))
+	for _, pending := range pendingTransactions {
 		if err := publishPendingTransaction(ctx, pool.GetByKey(pending.DeviceID), cfg, pending); err != nil {
 			return err
 		}
@@ -145,15 +139,7 @@ func replayPendingTransactions(ctx context.Context, cfg Config, pool *MQTTClient
 			"tx_seq":     pending.TxSeq,
 			"ts":         pending.CreatedAt,
 		})
-
-		completed := idx + 1
-		if detailedLogging {
-			log.Printf("INFO replayed pending tx device=%s tx_seq=%d", pending.DeviceID, pending.TxSeq)
-			continue
-		}
-		if completed%replayPendingTxProgressEvery == 0 || completed == len(pendingTransactions) {
-			log.Printf("INFO replayed pending tx progress completed=%d total=%d last_device=%s last_tx_seq=%d", completed, len(pendingTransactions), pending.DeviceID, pending.TxSeq)
-		}
+		log.Printf("INFO replayed pending tx device=%s tx_seq=%d", pending.DeviceID, pending.TxSeq)
 	}
 	return nil
 }

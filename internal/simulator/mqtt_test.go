@@ -93,3 +93,23 @@ func TestPublishPendingTransactionNormalizesRawMessagePayload(t *testing.T) {
 		t.Fatalf("unexpected payload body %s", string(client.payloads[0]))
 	}
 }
+
+func TestPublishRetryBackoff(t *testing.T) {
+	cases := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 0, want: 200 * time.Millisecond},
+		{attempt: 1, want: 200 * time.Millisecond},
+		{attempt: 2, want: 400 * time.Millisecond},
+		{attempt: 3, want: 800 * time.Millisecond},
+		{attempt: 4, want: 1600 * time.Millisecond},
+		{attempt: 5, want: 2 * time.Second},
+		{attempt: 9, want: 2 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := publishRetryBackoff(tc.attempt); got != tc.want {
+			t.Fatalf("attempt=%d expected backoff %s got %s", tc.attempt, tc.want, got)
+		}
+	}
+}

@@ -25,7 +25,7 @@
     "shutdown_timeout": 60
   },
   "transaction": {
-    "publish_timeout": 10,
+    "publish_timeout": 1,
     "max_retries": 0
   }
 }
